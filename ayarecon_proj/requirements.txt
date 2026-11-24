@@ -1,0 +1,38 @@
+# AyaRecon — Professional Penetration Testing Toolkit
+# Author: Ruel
+#
+# Core runtime uses the Python standard library wherever possible
+# (tkinter, sqlite3, socket, ssl, ftplib, smtplib, http.client, json, csv).
+# The packages below enable the richer enumeration, assessment and reporting
+# features. Everything degrades gracefully if an optional package is missing.
+
+# --- Networking / DNS / WHOIS / HTTP ---
+dnspython>=2.6.0            # DNS records + zone-transfer (AXFR) checks
+python-whois>=0.9.4        # WHOIS / RDAP registrar data
+requests>=2.31.0          # HTTP enumeration, subdomains, breach, Wayback
+
+# --- TLS / certificate analysis ---
+cryptography>=42.0.0      # Parse/validate SSL certificates, SANs, chain info
+
+# --- Phase 3 service enumeration (optional, read-only checks) ---
+pysnmp>=4.4.12            # SNMP default-community-string checks
+ldap3>=2.9.1             # LDAP anonymous-bind checks
+smbprotocol>=1.12.0      # SMB NULL-session share listing (or use impacket)
+
+# --- External-tool integrations ---
+python-nmap>=0.7.1       # (optional) nmap convenience; AyaRecon also parses nmap XML directly
+pyshark>=0.6            # in-app live packet capture (wraps tshark/Wireshark)
+scapy>=2.5.0            # packet-capture fallback when tshark/pyshark is unavailable
+
+# --- Embedded terminal (Windows only) ---
+pywinpty>=2.0.10 ; platform_system == "Windows"   # ConPTY for a full interactive terminal on Windows
+
+# --- Reporting ---
+jinja2>=3.1.0            # HTML report templating (optional)
+reportlab>=4.0.0        # PDF report export
+
+# --- Optional AI (local LLM) ---
+# No pip package is required for Ollama itself — AyaRecon talks to the local
+# Ollama HTTP API (http://localhost:11434). Install Ollama separately:
+#   https://ollama.com/download
+# Optional cloud providers can be enabled by entering an API key in Settings.
