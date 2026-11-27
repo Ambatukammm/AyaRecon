@@ -23,7 +23,39 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from ..util import Finding, normalise_target
+from ..util import (
+    Finding, normalise_target, is_admin, register_proc, unregister_proc,
+)
+
+
+def _run_nmap(cmd: list[str], timeout: int):
+    """Run nmap via Popen so a Stop can kill it; returns (returncode, stdout)."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, errors="replace")
+    register_proc(proc)
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+        return proc.returncode, out
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return -1, ""
+    finally:
+        unregister_proc(proc)
+
+
+def _privilege_adjust(args: list[str]) -> list[str]:
+    """
+    When NOT elevated, strip options that need raw sockets (they trigger repeated
+    Npcap/UAC prompts on Windows) and tell nmap to stay unprivileged. Trade-off:
+    no OS detection / no ARP-MAC without admin — but no interrupting pop-ups.
+    """
+    if is_admin():
+        return args
+    drop = {"-O", "-sS", "-PR", "--osscan-guess", "--osscan-limit"}
+    cleaned = [a for a in args if a not in drop]
+    if "--unprivileged" not in cleaned:
+        cleaned.append("--unprivileged")
+    return cleaned
 
 # Scan presets -> nmap arguments (XML output is added automatically).
 PRESETS = {
@@ -59,20 +91,21 @@ def run(target: str, args: list[str] | None = None,
     scan_args = PRESETS.get(preset or "", None)
     if scan_args is None:
         scan_args = _sanitise(args or ["-T4", "-F"])
+    scan_args = _privilege_adjust(list(scan_args))
+    if ":" in host and "-6" not in scan_args:   # IPv6 target
+        scan_args.append("-6")
 
     with tempfile.TemporaryDirectory() as tmp:
         xml_path = Path(tmp) / "scan.xml"
         cmd = ["nmap", *scan_args, "-oX", str(xml_path), host]
         try:
-            subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            return ([_f("nmap", "Nmap timed out", f"{host} ({timeout}s)", severity="low")],
-                    " ".join(cmd))
+            rc, _out = _run_nmap(cmd, timeout)
         except Exception as exc:
             return ([_f("nmap", "Nmap failed", str(exc), severity="low")], " ".join(cmd))
 
         if not xml_path.exists():
-            return ([_f("nmap", "Nmap produced no output", host, severity="low")],
+            note = "" if is_admin() else " (not elevated — ran unprivileged)"
+            return ([_f("nmap", "Nmap produced no output", host + note, severity="low")],
                     " ".join(cmd))
         findings = _parse_xml(xml_path.read_text(encoding="utf-8", errors="ignore"), host)
         return findings, " ".join(cmd)
@@ -151,6 +184,55 @@ def _parse_xml(xml_text: str, host: str) -> list[Finding]:
     if not findings:
         findings.append(_f("nmap", "No open ports reported", host))
     return findings
+
+
+def discover_hosts(ranges, timeout: int = 1200) -> list[dict]:
+    """
+    Host discovery across one or more subnets/VLANs. `ranges` is a CIDR string or
+    a list of them. nmap picks the right probe per target automatically: ARP on
+    the local segment (yields MAC + vendor), and ICMP/TCP for routed subnets
+    (no MAC — a device's MAC isn't visible from another segment).
+
+    Returns [{ip, mac, vendor, hostname}]. Used by the Network tab's sweep.
+    """
+    if not available():
+        return []
+    if isinstance(ranges, str):
+        ranges = [r.strip() for r in ranges.replace(",", " ").split() if r.strip()]
+    ranges = [r for r in ranges if r]
+    if not ranges:
+        return []
+    import tempfile
+    import xml.etree.ElementTree as ET
+    from pathlib import Path
+    results = []
+    with tempfile.TemporaryDirectory() as tmp:
+        xml_path = Path(tmp) / "disc.xml"
+        # -sn host discovery, -R force reverse-DNS, no port scan.
+        disc_args = _privilege_adjust(["-sn", "-R"])
+        cmd = ["nmap", *disc_args, "-oX", str(xml_path), *ranges]
+        try:
+            _run_nmap(cmd, timeout)
+            if not xml_path.exists():
+                return []
+            root = ET.fromstring(xml_path.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            return []
+        for host in root.findall("host"):
+            ip = mac = vendor = hostname = ""
+            for addr in host.findall("address"):
+                if addr.get("addrtype") == "ipv4":
+                    ip = addr.get("addr", "")
+                elif addr.get("addrtype") == "mac":
+                    mac = (addr.get("addr", "") or "").upper()
+                    vendor = addr.get("vendor", "") or ""
+            hn = host.find("hostnames/hostname")
+            if hn is not None:
+                hostname = hn.get("name", "") or ""
+            if ip:
+                results.append({"ip": ip, "mac": mac, "vendor": vendor,
+                                "hostname": hostname})
+    return results
 
 
 def _f(category, title, detail="", data=None, severity="info") -> Finding:

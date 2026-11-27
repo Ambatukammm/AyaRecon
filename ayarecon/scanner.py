@@ -23,6 +23,7 @@ from .permissions import PermissionManager, Mode, Decision
 from .ai.engine import AIEngine
 from .modules import (
     passive, active, recon_enum, defensive, enumeration, vuln_assessment,
+    network_discovery,
 )
 from .integrations import nmap_tool
 from .util import normalise_target, TOP_100_PORTS
@@ -46,6 +47,7 @@ class Scanner:
         confirmed: bool = False,
         confirmation_text: str = "",
         progress: Callable[[int, int], None] | None = None,
+        on_finding: Callable[[dict], None] | None = None,
         **kwargs,
     ) -> tuple[Decision, list[dict]]:
         target = normalise_target(target)
@@ -79,6 +81,11 @@ class Scanner:
                     remediation=f.get("remediation", ""),
                 )
                 f["target"] = target
+                if on_finding:          # stream each finding to the UI as it lands
+                    try:
+                        on_finding(f)
+                    except Exception:
+                        pass
             self.db.finish_scan(scan_id, "done")
             return decision, scored
         except Exception as exc:
@@ -92,6 +99,8 @@ class Scanner:
         target: str,
         confirmed: bool,
         phase_cb: Callable[[str], None] | None = None,
+        on_finding: Callable[[dict], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[Decision, list[dict]]:
         """
         Run phases 1→4 in sequence (AI/reporting is phase 5, done on demand):
@@ -104,13 +113,16 @@ class Scanner:
         collected: list[dict] = []
 
         def step(label, mode, module, **kw):
+            if cancel_check and cancel_check():
+                return
             if phase_cb:
                 phase_cb(label)
             dec, found = self.run(workspace_id, target, mode, module,
-                                  confirmed=confirmed,
+                                  confirmed=confirmed, on_finding=on_finding,
                                   confirmation_text="full workflow", **kw)
             collected.extend(found)
 
+        step("VLAN/VPN analysis", "passive", "network.vlanvpn")
         step("Phase 1 — Passive reconnaissance", "passive", "passive.all")
         step("Phase 2 — Port & service scanning", "active", "active.portscan")
         step("Phase 3 — Service enumeration", "active", "enumeration.all")
@@ -195,6 +207,10 @@ class Scanner:
                     kwargs.get("workspace_id"), target, f"nmap: {cmd}",
                     "active", True, "nmap scan")
             return findings
+
+        # --- VLAN / VPN analysis (local config + routing; no traffic) ---
+        if module == "network.vlanvpn":
+            return network_discovery.vlan_vpn_report(kwargs.get("vlan_ids"))
 
         # --- phase 4: vulnerability assessment (analysis only, no network) ---
         if module == "vuln.assess":

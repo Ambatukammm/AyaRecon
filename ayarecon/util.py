@@ -6,12 +6,58 @@ Made by Ruel.
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import socket
+import sys
 import time
 import threading
 from typing import Callable
 from urllib.parse import urlparse
+
+
+# --------------------------------------------------------------- privilege check
+def is_admin() -> bool:
+    """True if the process is elevated (Administrator on Windows, root elsewhere)."""
+    try:
+        if sys.platform.startswith("win"):
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        return os.geteuid() == 0
+    except Exception:
+        return False
+
+
+# --------------------------------------------------- running-process registry
+# Long scans (nmap, tshark) register their Popen here so a "Stop" can kill them.
+_PROCS: set = set()
+_PROC_LOCK = threading.Lock()
+
+
+def register_proc(proc) -> None:
+    with _PROC_LOCK:
+        _PROCS.add(proc)
+
+
+def unregister_proc(proc) -> None:
+    with _PROC_LOCK:
+        _PROCS.discard(proc)
+
+
+def terminate_all_procs() -> int:
+    """Terminate every registered subprocess. Returns how many were signalled."""
+    with _PROC_LOCK:
+        procs = list(_PROCS)
+        _PROCS.clear()
+    n = 0
+    for p in procs:
+        try:
+            if p.poll() is None:
+                p.terminate()
+                n += 1
+        except Exception:
+            pass
+    return n
 
 Finding = dict  # alias for readability
 

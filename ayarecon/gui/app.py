@@ -25,10 +25,11 @@ from ..permissions import (
 )
 from ..ai.engine import AIEngine
 from ..scanner import Scanner
-from ..modules import defensive, exploitation
+from ..modules import defensive, exploitation, network_discovery
 from .. import reports
 from ..integrations import tools as tools_reg, nmap_tool, capture as capture_mod, nvd
 from ..terminal import CommandRunner, parse_ansi, ANSI_COLORS
+from ..util import terminate_all_procs, is_admin
 
 # Purple theme.
 SEV_COLORS = {
@@ -43,6 +44,32 @@ ACCENT2 = "#d7a3ff"  # light lavender (secondary accent)
 FG = "#ece6f5"       # near-white lavender text
 MUTED = "#9a8fb5"    # muted lavender-grey
 BORDER = "#3a2f52"   # subtle purple border
+
+# Fonts — resolved at startup to the best modern family available (like the ones
+# popular apps use: Segoe UI for UI, Cascadia/JetBrains for mono). Defaults are
+# safe fallbacks until _pick_fonts() upgrades them.
+_UIFONT = "Segoe UI"
+_MONO = "Consolas"
+
+
+def _pick_fonts():
+    """Choose the nicest available UI + monospace fonts installed on this system."""
+    global _UIFONT, _MONO
+    try:
+        import tkinter.font as tkfont
+        fams = set(tkfont.families())
+        for f in ("Segoe UI Variable Text", "Segoe UI", "Inter", "Roboto",
+                  "SF Pro Text", "Helvetica Neue", "Noto Sans"):
+            if f in fams:
+                _UIFONT = f
+                break
+        for f in ("Cascadia Mono", "Cascadia Code", "JetBrains Mono", "SF Mono",
+                  "Consolas", "Menlo", "DejaVu Sans Mono"):
+            if f in fams:
+                _MONO = f
+                break
+    except Exception:
+        pass
 
 
 class AyaReconApp:
@@ -61,14 +88,59 @@ class AyaReconApp:
         self._build_style()
         self._build_layout()
         self._require_disclaimer()
+        self._check_admin()
         self.refresh_dashboard()
         self.root.after(150, self._drain_queue)
+
+    def _check_admin(self):
+        """If not elevated on Windows, offer ONE relaunch-as-admin (avoids repeated
+        UAC pop-ups mid-scan — nmap otherwise prompts per raw-socket call)."""
+        import sys
+        if is_admin() or not sys.platform.startswith("win"):
+            return
+        if messagebox.askyesno(
+                "Run as Administrator?",
+                "AyaRecon isn't elevated. Without admin, OS detection, MAC addresses and "
+                "packet capture are limited — and Windows may pop up a UAC prompt for "
+                "every scan step.\n\nRelaunch as Administrator now? (One prompt, then no "
+                "more mid-scan pop-ups.)"):
+            try:
+                import ctypes
+                params = " ".join(f'"{a}"' for a in sys.argv)
+                ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", sys.executable, params, None, 1)
+                self.root.destroy()
+                raise SystemExit(0)
+            except SystemExit:
+                raise
+            except Exception as exc:
+                messagebox.showinfo("Relaunch failed",
+                                    f"Couldn't relaunch automatically ({exc}).\n"
+                                    "Close AyaRecon and right-click → Run as administrator.")
 
     # ===================================================================== style
     def _build_style(self):
         self.root.title(f"{__app_name__} — Security Recon & Defence · by {__author__}")
-        self.root.geometry("1120x720")
+        self.root.geometry("1180x760")
         self.root.configure(bg=BG)
+        # Modern fonts everywhere: resolve, then push into Tk's named fonts so even
+        # default-font widgets (which otherwise fall back to an old Courier/Times)
+        # pick up the modern families.
+        _pick_fonts()
+        try:
+            import tkinter.font as tkfont
+            for nm in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
+                try:
+                    tkfont.nametofont(nm).configure(family=_UIFONT, size=10)
+                except Exception:
+                    pass
+            try:
+                tkfont.nametofont("TkFixedFont").configure(family=_MONO, size=10)
+            except Exception:
+                pass
+            self.root.option_add("*Font", (_UIFONT, 10))
+        except Exception:
+            pass
         style = ttk.Style()
         try:
             style.theme_use("clam")
@@ -76,20 +148,20 @@ class AyaReconApp:
             pass
         style.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(8, 6, 8, 0))
         style.configure("TNotebook.Tab", background=BG, foreground=MUTED,
-                        padding=(18, 9), borderwidth=0, font=("Segoe UI", 10))
+                        padding=(18, 9), borderwidth=0, font=(_UIFONT, 10))
         style.map("TNotebook.Tab",
                   background=[("selected", CARD)],
                   foreground=[("selected", "#ffffff"), ("active", FG)])
         style.configure("TFrame", background=BG)
         style.configure("Panel.TFrame", background=PANEL)
         style.configure("Card.TFrame", background=CARD)
-        style.configure("TLabel", background=BG, foreground=FG, font=("Segoe UI", 10))
+        style.configure("TLabel", background=BG, foreground=FG, font=(_UIFONT, 10))
         style.configure("Muted.TLabel", background=BG, foreground=MUTED)
         style.configure("Panel.TLabel", background=PANEL, foreground=FG)
         style.configure("Head.TLabel", background=BG, foreground=FG,
-                        font=("Segoe UI", 15, "bold"))
+                        font=(_UIFONT, 15, "bold"))
         style.configure("TButton", background=ACCENT, foreground="white",
-                        padding=(10, 6), borderwidth=0, font=("Segoe UI", 9))
+                        padding=(10, 6), borderwidth=0, font=(_UIFONT, 9))
         style.map("TButton", background=[("active", "#b58cff"), ("pressed", "#7c4dff")])
         style.configure("Ghost.TButton", background=CARD, foreground=FG)
         style.map("Ghost.TButton", background=[("active", "#312550")])
@@ -97,11 +169,11 @@ class AyaReconApp:
         style.map("Danger.TButton", background=[("active", "#da3633")])
         style.configure("Treeview", background=PANEL, fieldbackground=PANEL,
                         foreground=FG, borderwidth=0, rowheight=30,
-                        font=("Segoe UI", 10))
+                        font=(_UIFONT, 10))
         style.map("Treeview", background=[("selected", "#7c4dff")],
                   foreground=[("selected", "#ffffff")])
         style.configure("Treeview.Heading", background="#241a3a", foreground=MUTED,
-                        font=("Segoe UI", 9, "bold"), padding=6, relief="flat")
+                        font=(_UIFONT, 9, "bold"), padding=6, relief="flat")
         style.configure("TEntry", fieldbackground="#120d1e", foreground=FG,
                         borderwidth=1, padding=4)
         style.configure("TCombobox", fieldbackground="#120d1e", foreground=FG, padding=4)
@@ -110,21 +182,21 @@ class AyaReconApp:
         style.configure("TLabelframe", background=BG, borderwidth=1, relief="solid",
                         bordercolor=BORDER)
         style.configure("TLabelframe.Label", background=BG, foreground=ACCENT,
-                        font=("Segoe UI", 9, "bold"))
+                        font=(_UIFONT, 9, "bold"))
 
     def _build_layout(self):
         top = tk.Frame(self.root, bg=PANEL, height=60)
         top.pack(fill="x")
         top.pack_propagate(False)
         tk.Label(top, text="🛡  AyaRecon", bg=PANEL, fg="#ffffff",
-                 font=("Segoe UI Semibold", 18, "bold")).pack(side="left", padx=(20, 10))
+                 font=(_UIFONT, 18, "bold")).pack(side="left", padx=(20, 10))
         tk.Label(top, text="all-in-one recon cockpit", bg=PANEL, fg=MUTED,
-                 font=("Segoe UI", 10)).pack(side="left", pady=(6, 0))
+                 font=(_UIFONT, 10)).pack(side="left", pady=(6, 0))
         self.ws_var = tk.StringVar(value=f"● {self.workspace_name}")
         tk.Label(top, textvariable=self.ws_var, bg=PANEL, fg=ACCENT,
-                 font=("Segoe UI", 10, "bold")).pack(side="right", padx=20)
+                 font=(_UIFONT, 10, "bold")).pack(side="right", padx=20)
         tk.Label(top, text=f"v{__version__} · by {__author__}", bg=PANEL, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(side="right", padx=4)
+                 font=(_UIFONT, 9)).pack(side="right", padx=4)
         tk.Frame(self.root, bg=BORDER, height=1).pack(fill="x")
 
         self.nb = ttk.Notebook(self.root)
@@ -135,6 +207,7 @@ class AyaReconApp:
         self.gate_var = tk.StringVar()
 
         self.tab_dash = ttk.Frame(self.nb)
+        self.tab_net = ttk.Frame(self.nb)
         self.tab_recon = ttk.Frame(self.nb)
         self.tab_def = ttk.Frame(self.nb)
         self.tab_cap = ttk.Frame(self.nb)
@@ -144,7 +217,8 @@ class AyaReconApp:
         self.tab_rep = ttk.Frame(self.nb)
         self.tab_set = ttk.Frame(self.nb)
         for t, label in [
-            (self.tab_dash, "  Dashboard  "), (self.tab_recon, "  Workflow  "),
+            (self.tab_dash, "  Dashboard  "), (self.tab_net, "  Network  "),
+            (self.tab_recon, "  Workflow  "),
             (self.tab_def, "  Defence  "), (self.tab_cap, "  Capture  "),
             (self.tab_term, "  Terminal  "), (self.tab_tools, "  Tools  "),
             (self.tab_ai, "  AI Assistant  "), (self.tab_rep, "  Reports  "),
@@ -153,6 +227,7 @@ class AyaReconApp:
             self.nb.add(t, text=label)
 
         self._build_dashboard()
+        self._build_network()
         self._build_recon()
         self._build_defence()
         self._build_capture()
@@ -165,17 +240,19 @@ class AyaReconApp:
         tk.Frame(self.root, bg=BORDER, height=1).pack(fill="x", side="bottom")
         bar = tk.Frame(self.root, bg=PANEL, height=30)
         bar.pack(fill="x", side="bottom")
-        # Busy spinner — animates whenever a background task is running.
+        # Busy spinner — an animated glyph (no side-to-side bar).
         self._busy_count = 0
-        self.busy_bar = ttk.Progressbar(bar, mode="indeterminate", length=120)
+        self._cancel = threading.Event()
         self.busy_lbl = tk.Label(bar, text="", bg=PANEL, fg=ACCENT2,
-                                 font=("Segoe UI", 9, "bold"))
+                                 font=(_MONO, 11, "bold"))
         tk.Label(bar, textvariable=self.status, bg=PANEL, fg=MUTED,
                  anchor="w").pack(side="left", padx=12)
+        self.stop_btn = ttk.Button(bar, text="■ Stop", style="Danger.TButton",
+                                   command=self._stop_scans)
+        self.stop_btn.pack(side="left", padx=6, pady=3)
         tk.Label(bar, textvariable=self.gate_var, bg=PANEL, fg=SEV_COLORS["high"],
                  anchor="e").pack(side="right", padx=12)
-        self.busy_bar.pack(side="right", padx=(4, 8), pady=6)
-        self.busy_lbl.pack(side="right")
+        self.busy_lbl.pack(side="right", padx=(4, 10))
         self._update_gate_label()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -191,20 +268,30 @@ class AyaReconApp:
                 self.event_q.put(("busy", -1))
         threading.Thread(target=wrapper, daemon=True).start()
 
+    _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
     def _busy_delta(self, d):
         self._busy_count = max(0, self._busy_count + d)
-        if self._busy_count > 0:
-            self.busy_lbl.configure(text="working…")
-            try:
-                self.busy_bar.start(12)
-            except Exception:
-                pass
-        else:
+        if self._busy_count == 0:
             self.busy_lbl.configure(text="")
-            try:
-                self.busy_bar.stop()
-            except Exception:
-                pass
+
+    def _tick_busy(self):
+        """Animate the spinner glyph while busy (called from the main loop)."""
+        if getattr(self, "_busy_count", 0) > 0:
+            self._busy_frame = (getattr(self, "_busy_frame", 0) + 1) % len(self._SPINNER)
+            self.busy_lbl.configure(text=f"{self._SPINNER[self._busy_frame]} working")
+
+    def _stop_scans(self):
+        """Cancel running scans: signal loops and kill any nmap/tshark processes."""
+        self._cancel.set()
+        n = terminate_all_procs()
+        self.status.set(f"⏹ Stopping — killed {n} running process(es).")
+        if hasattr(self, "net_log"):
+            self._net_log("── stop requested — cancelling ──")
+
+    def _begin_scan(self):
+        """Call at the start of a user-initiated scan to clear the cancel flag."""
+        self._cancel.clear()
 
     def _on_close(self):
         # Stop background engines cleanly before exiting.
@@ -249,22 +336,22 @@ class AyaReconApp:
             card.pack_propagate(False)
             v = tk.StringVar(value="0")
             tk.Label(card, textvariable=v, bg=PANEL, fg=SEV_COLORS[sev],
-                     font=("Segoe UI", 26, "bold")).pack(pady=(12, 0))
+                     font=(_UIFONT, 26, "bold")).pack(pady=(12, 0))
             tk.Label(card, text=sev.upper(), bg=PANEL, fg=MUTED,
-                     font=("Segoe UI", 9, "bold")).pack()
+                     font=(_UIFONT, 9, "bold")).pack()
             self.card_vars[sev] = v
 
         grade_row = tk.Frame(f, bg=BG)
         grade_row.pack(fill="x", padx=16, pady=8)
         self.grade_var = tk.StringVar(value="Security grade: —")
         tk.Label(grade_row, textvariable=self.grade_var, bg=BG, fg=FG,
-                 font=("Segoe UI", 13, "bold")).pack(side="left")
+                 font=(_UIFONT, 13, "bold")).pack(side="left")
 
         rfhead = tk.Frame(f, bg=BG)
         rfhead.pack(fill="x", padx=16, pady=(10, 2))
         ttk.Label(rfhead, text="Recent findings", style="Head.TLabel").pack(side="left")
         tk.Label(rfhead, text="  ·  double-click any finding for the attack path & fix",
-                 bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
+                 bg=BG, fg=MUTED, font=(_UIFONT, 9)).pack(side="left")
         self.dash_tree = self._make_tree(f, ("severity", "category", "title", "detail"))
         self.dash_tree.pack(fill="both", expand=True, padx=16, pady=(0, 16))
 
@@ -290,20 +377,467 @@ class AyaReconApp:
             self.db.clear_findings(self.workspace_id)
             self.refresh_dashboard()
 
+    # ===================================================================== network
+    def _build_network(self):
+        f = self.tab_net
+        head = tk.Frame(f, bg=BG)
+        head.pack(fill="x", padx=16, pady=(12, 2))
+        ttk.Label(head, text="Network Discovery", style="Head.TLabel").pack(side="left")
+        tk.Label(head, text="passive by default — reads your ARP cache & OS config, "
+                            "sends nothing", bg=BG, fg=MUTED,
+                 font=(_UIFONT, 9)).pack(side="left", padx=10)
+
+        bar = tk.Frame(f, bg=BG)
+        bar.pack(fill="x", padx=16, pady=(6, 2))
+        ttk.Button(bar, text="🔍 Discover (passive)",
+                   command=lambda: self._net_discover(False)).pack(side="left")
+        ttk.Button(bar, text="📡 Scan all subnets",
+                   command=lambda: self._net_discover(True)).pack(side="left", padx=6)
+        ttk.Button(bar, text="🧠 Deep fingerprint (OS+ports)",
+                   command=self._net_deep_fingerprint).pack(side="left", padx=6)
+
+        # Scan ranges — this is how multiple VLANs get covered. Prefilled with the
+        # subnets this host is on; add other VLAN ranges (comma-separated CIDRs).
+        rbar = tk.Frame(f, bg=BG)
+        rbar.pack(fill="x", padx=16, pady=(2, 2))
+        tk.Label(rbar, text="Scan ranges:", bg=BG, fg=FG).pack(side="left")
+        self.net_ranges = ttk.Entry(rbar)
+        self.net_ranges.pack(side="left", fill="x", expand=True, padx=6)
+        tk.Label(rbar, text="leave blank to AUTO-detect all reachable subnets/VLANs; "
+                            "or pin specific CIDRs here",
+                 bg=BG, fg=MUTED, font=(_UIFONT, 8)).pack(side="left", padx=4)
+
+        # Interface / VPN / VLAN summary card
+        self.net_summary = tk.Text(f, height=6, bg=CARD, fg=FG, relief="flat",
+                                   wrap="word", font=(_UIFONT, 9), padx=12, pady=10)
+        self.net_summary.tag_configure("h", foreground=ACCENT2,
+                                       font=(_UIFONT, 9, "bold"))
+        self.net_summary.pack(fill="x", padx=16, pady=(6, 6))
+        self.net_summary.insert("end", "Click “Discover (passive)” to read what's on your "
+                                "VLAN now, or “Scan all subnets” to reach other VLANs "
+                                "(fill in their ranges above).")
+        self.net_summary.configure(state="disabled")
+
+        dhead = tk.Frame(f, bg=BG)
+        dhead.pack(fill="x", padx=16, pady=(2, 0))
+        tk.Label(dhead, text="Devices", bg=BG, fg=FG,
+                 font=(_UIFONT, 11, "bold")).pack(side="left")
+        tk.Label(dhead, text="Filter:", bg=BG, fg=MUTED).pack(side="left", padx=(16, 4))
+        self.net_filter = ttk.Entry(dhead, width=28)
+        self.net_filter.pack(side="left")
+        self.net_filter.bind("<KeyRelease>", lambda e: self._net_apply_filter())
+        for label, flt in (("All", ""), ("Routers", "router"), ("Printers", "printer"),
+                           ("Cameras", "camera"), ("Phones", "phone"),
+                           ("This VLAN", "__local__"), ("Remote", "__remote__")):
+            ttk.Button(dhead, text=label, style="Ghost.TButton",
+                       command=lambda x=flt: self._net_set_devfilter(x)).pack(side="left", padx=2)
+
+        wrap = tk.Frame(f, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=16, pady=(2, 12))
+        cols = ("ip", "ipv6", "mac", "vendor", "host", "type", "assign")
+        self.net_tree = ttk.Treeview(wrap, columns=cols, show="headings", height=14)
+        heads = {"ip": "IPv4", "ipv6": "IPv6", "mac": "MAC address", "vendor": "Vendor",
+                 "host": "Hostname", "type": "Device type", "assign": "IP assignment"}
+        widths = {"ip": 120, "ipv6": 170, "mac": 145, "vendor": 140, "host": 180,
+                  "type": 150, "assign": 240}
+        for c in cols:
+            self.net_tree.heading(c, text=heads[c], anchor="w")
+            self.net_tree.column(c, width=widths[c], anchor="w", stretch=True)
+        self.net_tree.tag_configure("gw", foreground=ACCENT2,
+                                    font=(_UIFONT, 10, "bold"))
+        self.net_tree.tag_configure("me", foreground="#7fe3c0")
+        self.net_tree.tag_configure("remote", foreground=MUTED)
+        self.net_tree.tag_configure("row_a", background=PANEL)
+        self.net_tree.tag_configure("row_b", background="#211a33")
+        nvs = ttk.Scrollbar(wrap, orient="vertical", command=self.net_tree.yview)
+        self.net_tree.configure(yscrollcommand=nvs.set)
+        self.net_tree.pack(side="left", fill="both", expand=True)
+        nvs.pack(side="right", fill="y")
+        self.net_tree.bind("<Double-1>", self._net_on_device_click)
+        self._net_devices = {}       # tree iid -> device dict
+        self._net_ip_iid = {}        # ip -> tree iid (for live type updates)
+        self._net_all = []           # every discovered device (for filtering)
+        tk.Label(f, text="Double-click a device to inspect it and run a port scan.",
+                 bg=BG, fg=MUTED, font=(_UIFONT, 8)).pack(anchor="w", padx=16,
+                                                             pady=(0, 2))
+        # Live scan log — shows outputs being produced while scanning.
+        self.net_log = scrolledtext.ScrolledText(f, height=6, bg="#0c0a14", fg="#bfe6cf",
+                                                 relief="flat", font=(_MONO, 9),
+                                                 padx=8, pady=6)
+        self.net_log.pack(fill="x", padx=16, pady=(0, 12))
+        self.net_log.insert("end", "Live scan log — activity appears here as it happens.\n")
+        self.net_log.configure(state="disabled")
+
+    def _net_discover(self, active):
+        if active:
+            if not nmap_tool.available():
+                messagebox.showinfo("Scan", "nmap isn't installed — install it from the "
+                                    "Tools tab, or use passive Discover.")
+                return
+            auto = not (self.net_ranges.get().strip() if hasattr(self, "net_ranges") else "")
+            msg = ("This runs nmap host-discovery (ARP on your own VLAN, routed ICMP/TCP "
+                   "for the rest). No port scan — just finds hosts, but it does put light "
+                   "traffic on each subnet.\n\n")
+            if auto:
+                msg += ("AUTO mode: AyaRecon will first work out which subnets/VLANs exist "
+                        "(routing table + probing sibling gateways), then scan those. This "
+                        "takes a bit longer.\n\n")
+            msg += "Proceed only on networks you're authorised to test. Continue?"
+            if not messagebox.askyesno("Scan all subnets", msg):
+                return
+        ranges_text = self.net_ranges.get().strip() if hasattr(self, "net_ranges") else ""
+        ranges = ([r.strip() for r in ranges_text.replace(",", " ").split() if r.strip()]
+                  if ranges_text else None)
+        self._net_set_summary("⏳ Discovering devices" +
+                              (" across subnets… (routed sweeps can take a minute)"
+                               if active else "…"))
+        self._begin_scan()
+        self.status.set("Mapping the network…")
+        self.net_tree.delete(*self.net_tree.get_children())
+        self._net_devices = {}
+        self._net_ip_iid = {}
+        self._net_all = []
+        self.event_q.put(("netlog", "── " + ("active multi-subnet scan" if active
+                                             else "passive discovery") + " started ──"))
+
+        def work():
+            data = network_discovery.discover(
+                active=active, ranges=ranges, nmap_sweep=nmap_tool.discover_hosts,
+                netbios=True,
+                on_device=lambda d: self.event_q.put(("netdev", d)),
+                progress=lambda i, n: self.event_q.put(("phase", f"resolving {i}/{n}")))
+            self.event_q.put(("net_result", data))
+        self._run_bg(work)
+
+    def _net_log(self, text):
+        try:
+            self.net_log.configure(state="normal")
+            self.net_log.insert("end", text + "\n")
+            self.net_log.see("end")
+            self.net_log.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _net_insert_row(self, d):
+        if d.get("is_self"):
+            tag = "me"
+        elif d.get("is_gateway"):
+            tag = "gw"
+        elif not d.get("local", True):
+            tag = "remote"
+        else:
+            tag = ""
+        host = d["hostname"]
+        if d.get("is_self"):
+            host = (host if host != "—" else "this host") + " (you)"
+        stripe = "row_b" if len(self.net_tree.get_children()) % 2 else "row_a"
+        iid = self.net_tree.insert("", "end", tags=(tag, stripe),
+                                   values=(d["ip"], d.get("ipv6_str", "—"), d["mac"],
+                                           d["vendor"], host, d["type"], d["assignment"]))
+        self._net_devices[iid] = d
+        self._net_ip_iid[d["ip"]] = iid
+        return iid
+
+    def _net_match(self, d):
+        flt = (str(self.net_filter.get()).strip().lower()
+               if hasattr(self, "net_filter") else "")
+        if not flt:
+            return True
+        if flt == "__local__":
+            return d.get("local", True)
+        if flt == "__remote__":
+            return not d.get("local", True)
+        hay = " ".join(str(d.get(k, "")) for k in
+                       ("ip", "mac", "vendor", "hostname", "type", "assignment")).lower()
+        return flt in hay
+
+    def _net_set_devfilter(self, value):
+        self.net_filter.delete(0, "end")
+        if value and not value.startswith("__"):
+            self.net_filter.insert(0, value)
+        elif value.startswith("__"):
+            self.net_filter.insert(0, value)
+        self._net_apply_filter()
+
+    def _net_apply_filter(self):
+        self.net_tree.delete(*self.net_tree.get_children())
+        self._net_devices = {}
+        self._net_ip_iid = {}
+        shown = 0
+        for d in getattr(self, "_net_all", []):
+            if self._net_match(d):
+                self._net_insert_row(d)
+                shown += 1
+        self.status.set(f"Showing {shown} device(s)" +
+                        (f" matching filter" if self.net_filter.get().strip() else ""))
+
+    def _net_add_device(self, d):
+        """Live-append one device row as discovery finds it (respecting the filter)."""
+        if not hasattr(self, "_net_all"):
+            self._net_all = []
+        self._net_all.append(d)
+        if self._net_match(d):
+            iid = self._net_insert_row(d)
+            self.net_tree.see(iid)
+        self._net_log(f"  + {d['ip']:15}  {d['vendor']:14}  {d['hostname']}")
+
+    def _net_update_type(self, ip, newtype, os_text=""):
+        iid = self._net_ip_iid.get(ip)
+        if iid:
+            try:
+                self.net_tree.set(iid, "type", newtype)
+                if iid in self._net_devices:
+                    self._net_devices[iid]["type"] = newtype
+                    if os_text:
+                        self._net_devices[iid]["os"] = os_text
+            except Exception:
+                pass
+
+    def _net_set_summary(self, text, header=""):
+        self.net_summary.configure(state="normal")
+        self.net_summary.delete("1.0", "end")
+        if header:
+            self.net_summary.insert("end", header + "\n", ("h",))
+        self.net_summary.insert("end", text)
+        self.net_summary.configure(state="disabled")
+
+    def _net_fill(self, data):
+        s = data["summary"]
+        vpn = ", ".join(s["vpn"]) if s["vpn"] else "none detected"
+        vlan = ", ".join(s["vlan"]) if s["vlan"] else "none detected"
+        local_cidrs = ", ".join(s.get("local_cidrs", [])) or s.get("cidr", "—")
+        scanned = ", ".join(s.get("scanned", [])) if s.get("scanned") else "(passive — this VLAN only)"
+        header = f"This machine: {s['this_ip']} on {s['iface']} — {s['this_assignment']}"
+        body = (
+            f"Local subnets (VLANs this host is on): {local_cidrs}\n"
+            f"Scanned this run: {scanned}\n"
+            f"Devices found: {s['device_count']}   |   VPN: {vpn}   |   VLAN ifaces: {vlan}\n"
+            "Remote-subnet devices show no MAC (not visible across a router) and an "
+            "inferred IP type; a DHCP reservation is only confirmable on the DHCP server."
+        )
+        self._net_set_summary(body, header)
+        # Devices were streamed in live via the 'netdev' events; here we just
+        # finalise the summary and status.
+        self._net_log(f"── discovery complete: {s['device_count']} device(s) ──")
+        self.status.set(f"Network map ready — {s['device_count']} device(s).")
+
+    # ---- per-device inspection + port scan ----
+    def _net_on_device_click(self, event):
+        sel = self.net_tree.selection()
+        if not sel:
+            return
+        dev = self._net_devices.get(sel[0])
+        if dev:
+            self._net_device_detail(dev)
+
+    def _net_device_detail(self, dev):
+        win = tk.Toplevel(self.root, bg=BG)
+        win.title(f"Device — {dev['ip']}")
+        win.geometry("700x580")
+        win.configure(bg=BG)
+        tk.Frame(win, bg=ACCENT, height=4).pack(fill="x")   # colour accent strip
+        head = tk.Frame(win, bg=CARD)
+        head.pack(fill="x")
+        tk.Label(head, text=f"🖥  {dev['ip']}", bg=CARD, fg="#ffffff",
+                 font=(_UIFONT, 15, "bold")).pack(anchor="w", padx=16, pady=(12, 0))
+        tk.Label(head, text=dev.get("type", ""), bg=CARD, fg=ACCENT2,
+                 font=(_UIFONT, 10, "bold")).pack(anchor="w", padx=16, pady=(0, 6))
+        grid = tk.Frame(head, bg=CARD)
+        grid.pack(fill="x", padx=16, pady=(0, 12))
+        v6 = dev.get("ipv6") or []
+        chips = [("MAC", dev.get("mac", "—"), "#7fe3c0"),
+                 ("Vendor", dev.get("vendor", "—"), "#9fe8ff"),
+                 ("Hostname", dev.get("hostname", "—"), "#ffd79b"),
+                 ("IP type", dev.get("assignment", "—"), ACCENT2),
+                 ("IPv6", (", ".join(v6[:2]) + (f"  +{len(v6)-2}" if len(v6) > 2 else ""))
+                  if v6 else "—", "#c6b0ff")]
+        for i, (k, v, col) in enumerate(chips):
+            cell = tk.Frame(grid, bg=CARD)
+            cell.grid(row=i // 2, column=i % 2, sticky="w", padx=(0, 24), pady=2)
+            tk.Label(cell, text=k + ": ", bg=CARD, fg=MUTED,
+                     font=(_UIFONT, 9)).pack(side="left")
+            tk.Label(cell, text=v, bg=CARD, fg=col,
+                     font=(_MONO, 9, "bold")).pack(side="left")
+
+        btns = tk.Frame(win, bg=BG)
+        btns.pack(fill="x", padx=14, pady=8)
+        ttk.Button(btns, text="🔌 Port scan (services + OS)",
+                   command=lambda: self._net_port_scan(dev)).pack(side="left")
+        ttk.Button(btns, text="🤖 Ask AI", style="Ghost.TButton",
+                   command=lambda: self._net_ask_ai(dev)).pack(side="left", padx=6)
+        tk.Label(btns, text="nmap -sV -O — needs admin; feeds Findings + CVEs. "
+                            "Ask AI explains risks & fixes.", bg=BG, fg=MUTED,
+                 font=(_UIFONT, 8)).pack(side="left", padx=8)
+        self._net_detail_dev = dev
+
+        self._net_scan_out = scrolledtext.ScrolledText(
+            win, bg="#120d1e", fg=FG, relief="flat", wrap="word",
+            font=(_MONO, 10), padx=12, pady=10)
+        self._net_scan_out.pack(fill="both", expand=True, padx=14, pady=(8, 12))
+        # Separate colours: port-scan output (green) vs AI output (lavender).
+        self._net_scan_out.tag_configure("port", foreground="#86e8b0")
+        self._net_scan_out.tag_configure("ai", foreground="#d7a3ff")
+        self._net_scan_out.tag_configure("sys", foreground=MUTED,
+                                         font=(_MONO, 9, "italic"))
+        self._net_scan_out.insert("end", "Port-scan results show in green; AI answers in "
+                                  "purple. Click a button above to begin.\n", ("sys",))
+        self._net_scan_out.configure(state="disabled")
+
+    def _net_scan_write(self, text, clear=False, tag=None):
+        if not getattr(self, "_net_scan_out", None):
+            return
+        try:
+            self._net_scan_out.configure(state="normal")
+            if clear:
+                self._net_scan_out.delete("1.0", "end")
+            self._net_scan_out.insert("end", text, (tag,) if tag else ())
+            self._net_scan_out.see("end")
+            self._net_scan_out.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _net_port_scan(self, dev):
+        if not nmap_tool.available():
+            messagebox.showinfo("Port scan", "nmap isn't installed — install it from the "
+                                "Tools tab.")
+            return
+        ip = dev["ip"]
+        if not dev.get("local", True):
+            if not messagebox.askyesno(
+                    "Remote host",
+                    f"{ip} is on another subnet (routed). A port scan will send traffic "
+                    "across the network to it. Proceed (authorised networks only)?"):
+                return
+        self._net_scan_write(f"⏳ Scanning {ip} (nmap -sV -O)… this can take a minute.\n",
+                             clear=True, tag="sys")
+        self.status.set(f"Port-scanning {ip}…")
+
+        def work():
+            dec, findings = self.scanner.run(
+                self.workspace_id, ip, "active", "nmap.scan",
+                confirmed=True, confirmation_text="device port scan",
+                preset="OS + service detection")
+            lines = [f"Results for {ip}:\n"]
+            ports = [f for f in findings if f.get("category") == "nmap"
+                     and f.get("data", {}).get("port")]
+            osg = [f for f in findings if "OS guess" in f.get("title", "")]
+            if osg:
+                lines.append("OS: " + "; ".join(o["detail"] for o in osg) + "\n")
+            if ports:
+                lines.append("\nOpen ports / services:")
+                for p in sorted(ports, key=lambda x: x["data"].get("port", 0)):
+                    d = p["data"]
+                    lines.append(f"  {d.get('port')}/{d.get('protocol','tcp')}  "
+                                 f"{d.get('service','')}  {d.get('banner','')}".rstrip())
+            else:
+                lines.append("No open ports found (or host blocked the scan).")
+            lines.append(f"\n{len(findings)} finding(s) added to the Findings database "
+                         "(see Dashboard / Reports; Phase 4 CVE matching applied).")
+            # Sharpen the device-type column from the scan.
+            osg = next((o["detail"] for o in findings if "OS guess" in o.get("title", "")), "")
+            pnums = [p["data"]["port"] for p in ports]
+            newtype = network_discovery.sharper_type(
+                dev.get("vendor", ""), dev.get("hostname", ""),
+                dev.get("is_gateway", False), osg, pnums)
+            self.event_q.put(("net_type", (ip, newtype, osg)))
+            self.event_q.put(("net_portscan", "\n".join(lines)))
+            self.event_q.put(("refresh_dash", None))
+        self._run_bg(work)
+
+    def _net_ask_ai(self, dev):
+        ip = dev["ip"]
+        self._net_scan_write(f"\n🤖 Asking AI about {ip}…\n", tag="sys")
+
+        def work():
+            findings = [f for f in self.db.list_findings(self.workspace_id)
+                        if f.get("target") == ip]
+            if findings:
+                ans = self.ai.ask(
+                    f"For host {ip} ({dev.get('vendor','')} {dev.get('type','')}), explain "
+                    "the security problems found and concrete ways to improve it.", findings)
+            else:
+                ans = (f"No scan findings for {ip} yet — run a Port scan first, then Ask AI "
+                       "for specifics. General hardening: confirm the device's role, close "
+                       "ports it doesn't need, patch exposed services, require strong "
+                       "auth/MFA, and segment IoT or untrusted devices onto their own VLAN.")
+            self.event_q.put(("net_portscan_append", "\n— AI —\n" + ans))
+        self._run_bg(work)
+
+    def _net_deep_fingerprint(self):
+        if not nmap_tool.available():
+            messagebox.showinfo("Deep fingerprint", "nmap isn't installed — install it "
+                                "from the Tools tab.")
+            return
+        targets = [d for d in self._net_devices.values()
+                   if d.get("local", True) and not d.get("is_self")]
+        # de-dup by ip
+        seen, uniq = set(), []
+        for d in targets:
+            if d["ip"] not in seen:
+                seen.add(d["ip"])
+                uniq.append(d)
+        if not uniq:
+            messagebox.showinfo("Deep fingerprint", "Discover devices first (local devices "
+                                "only are bulk-fingerprinted; use a device's own Port scan "
+                                "for remote hosts).")
+            return
+        if not messagebox.askyesno(
+                "Deep fingerprint",
+                f"Run OS + service detection (nmap -sV -O) on {len(uniq)} local device(s). "
+                "This is slower and sends real traffic to each host; results stream in and "
+                "sharpen the device-type column.\n\nAuthorised networks only. Continue?"):
+            return
+        self._begin_scan()
+        self._net_log(f"── deep fingerprint of {len(uniq)} device(s) started ──")
+        self.status.set("Deep fingerprinting devices…")
+        stream = self._stream(self.recon_tree)
+
+        def work():
+            for d in uniq:
+                if self._cancel.is_set():
+                    self.event_q.put(("netlog", "── cancelled ──"))
+                    break
+                ip = d["ip"]
+                self.event_q.put(("netlog", f"  🧠 fingerprinting {ip}…"))
+                dec, findings = self.scanner.run(
+                    self.workspace_id, ip, "active", "nmap.scan", confirmed=True,
+                    confirmation_text="deep fingerprint", preset="OS + service detection",
+                    on_finding=stream)
+                pnums = [f["data"]["port"] for f in findings
+                         if f.get("category") == "nmap" and f.get("data", {}).get("port")]
+                osg = next((f["detail"] for f in findings
+                            if "OS guess" in f.get("title", "")), "")
+                newtype = network_discovery.sharper_type(
+                    d.get("vendor", ""), d.get("hostname", ""),
+                    d.get("is_gateway", False), osg, pnums)
+                self.event_q.put(("net_type", (ip, newtype, osg)))
+                self.event_q.put(("netlog",
+                                  f"    ✓ {ip}: {newtype}  ports={sorted(pnums) or 'none'}"
+                                  + (f"  OS: {osg}" if osg else "")))
+            self.event_q.put(("netlog", "── deep fingerprint complete ──"))
+            self.event_q.put(("refresh_dash", None))
+        self._run_bg(work)
+
     # ===================================================================== workflow
     def _build_recon(self):
         f = self.tab_recon
         bar = tk.Frame(f, bg=BG)
         bar.pack(fill="x", padx=16, pady=(12, 4))
         tk.Label(bar, text="Target:", bg=BG, fg=FG).pack(side="left")
-        self.recon_target = ttk.Entry(bar, width=30)
+        self.recon_target = ttk.Entry(bar, width=28)
         self.recon_target.pack(side="left", padx=8)
         self.recon_target.insert(0, "example.com")
-        ttk.Button(bar, text="▶ Run full 5-phase workflow",
-                   command=self._run_workflow).pack(side="left", padx=8)
+        ttk.Button(bar, text="▶ Run full workflow",
+                   command=self._run_workflow).pack(side="left", padx=6)
+        ttk.Button(bar, text="🧪 VLAN/VPN test", style="Ghost.TButton",
+                   command=lambda: self._launch("passive", "network.vlanvpn")).pack(side="left", padx=4)
         self.phase_var = tk.StringVar(value="")
         tk.Label(bar, textvariable=self.phase_var, bg=BG, fg=ACCENT,
-                 font=("Segoe UI", 9, "bold")).pack(side="left", padx=8)
+                 font=(_UIFONT, 9, "bold")).pack(side="left", padx=8)
+        tk.Label(f, text="Target can be a domain, an IP, a CIDR (e.g. 192.168.1.0/24) or a "
+                         "comma-separated list — ranges are expanded to live hosts and each "
+                         "is scanned.", bg=BG, fg=MUTED, font=(_UIFONT, 8),
+                 wraplength=1000, justify="left").pack(anchor="w", padx=16)
 
         # Scrollable column of phase panels.
         body = tk.Frame(f, bg=BG)
@@ -353,7 +887,7 @@ class AyaReconApp:
                    command=self._nvd_enrich).pack(side="left", padx=4, pady=6)
         tk.Label(p4, text="Assessment is offline; NVD check pulls the newest CVEs for "
                           "discovered versions.",
-                 bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(side="left", padx=8)
+                 bg=BG, fg=MUTED, font=(_UIFONT, 8)).pack(side="left", padx=8)
 
         # Gated — brute force & credential testing (DISABLED BY DEFAULT)
         ef = tk.LabelFrame(
@@ -365,7 +899,7 @@ class AyaReconApp:
                 "PERMISSION is illegal. Discovery modules below are locked until you "
                 "unlock the gate and tick the box.")
         tk.Label(ef, text=warn, bg=BG, fg="#d9534f", wraplength=980, justify="left",
-                 font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=6, pady=(4, 2))
+                 font=(_UIFONT, 8, "bold")).pack(anchor="w", padx=6, pady=(4, 2))
         row = tk.Frame(ef, bg=BG)
         row.pack(fill="x")
         ttk.Button(row, text="🔒 Unlock permission gate",
@@ -386,7 +920,7 @@ class AyaReconApp:
                    command=self._credential_placeholder).pack(side="left", padx=5, pady=6)
         tk.Label(ef, text="Note: online password/credential brute-forcing is intentionally "
                           "not implemented in this build — see README.",
-                 bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w", padx=6, pady=(0, 4))
+                 bg=BG, fg=MUTED, font=(_UIFONT, 8)).pack(anchor="w", padx=6, pady=(0, 4))
 
         self.recon_prog = ttk.Progressbar(f, mode="determinate")
         self.recon_prog.pack(fill="x", padx=16, pady=(6, 2))
@@ -395,7 +929,7 @@ class AyaReconApp:
         ttk.Label(rhead, text="Results", style="Head.TLabel").pack(side="left")
         tk.Label(rhead, text="  ·  double-click a finding to see how it can be exploited "
                              "and how to fix it",
-                 bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
+                 bg=BG, fg=MUTED, font=(_UIFONT, 9)).pack(side="left")
         self.recon_tree = self._make_tree(f, ("severity", "category", "title", "detail"))
         self.recon_tree.pack(fill="both", expand=True, padx=16, pady=(0, 12))
 
@@ -432,15 +966,50 @@ class AyaReconApp:
             "Do you have authorisation to test this target?")
         if not confirmed:
             return
-        self.status.set("Running full 5-phase workflow …")
 
-        def phase_cb(label):
-            self.event_q.put(("phase", label))
+        def per_host(h, stream):
+            self.scanner.run_full_workflow(
+                self.workspace_id, h, confirmed=True,
+                phase_cb=lambda label: self.event_q.put(("phase", f"{h}: {label}")),
+                on_finding=stream, cancel_check=self._cancel.is_set)
+
+        self._expand_and_run(target, per_host, self.recon_tree, "workflow")
+
+    def _expand_and_run(self, spec, per_host, tree, label):
+        """
+        Expand a target spec (host / domain / CIDR / comma-list) into hosts —
+        discovering live hosts inside any CIDR — then run `per_host(host, stream)`
+        for each, streaming results with a separator line per host. Cancellable.
+        """
+        self._begin_scan()
+        self._tree_clear(tree)
+        tokens = [t.strip() for t in spec.replace(",", " ").split() if t.strip()]
+        stream = self._stream(tree)
 
         def work():
-            dec, findings = self.scanner.run_full_workflow(
-                self.workspace_id, target, confirmed=True, phase_cb=phase_cb)
-            self.event_q.put(("scan_done", ("workflow", self.recon_tree, dec, findings)))
+            hosts = []
+            for tok in tokens:
+                if "/" in tok and tok.count(".") >= 1:   # CIDR range → discover live hosts
+                    self.event_q.put(("phase", f"discovering live hosts in {tok}…"))
+                    for h in nmap_tool.discover_hosts([tok]):
+                        if h.get("ip"):
+                            hosts.append(h["ip"])
+                else:
+                    hosts.append(tok)
+            seen = set()
+            hosts = [h for h in hosts if not (h in seen or seen.add(h))]
+            self.event_q.put(("phase", f"{len(hosts)} host(s) to scan"))
+            multi = len(hosts) > 1
+            for h in hosts:
+                if self._cancel.is_set():
+                    break
+                if multi:
+                    stream({"severity": "info", "category": "host",
+                            "title": f"════ {h} ════", "detail": f"{label} target"})
+                per_host(h, stream)
+            self.event_q.put(("scan_done", (label, tree,
+                                            Decision(True, f"{label} over {len(hosts)} host(s)"),
+                                            [])))
         self._run_bg(work)
 
     # ===================================================================== defence
@@ -454,11 +1023,13 @@ class AyaReconApp:
         ttk.Button(bar, text="Mark as owned",
                    command=self._mark_owned).pack(side="left", padx=4)
         ttk.Button(bar, text="🛡️ Run self-audit",
-                   command=lambda: self._launch("defensive", "defensive.self_audit")
-                   ).pack(side="left", padx=4)
+                   command=self._run_defence_audit).pack(side="left", padx=4)
         ttk.Button(bar, text="Privacy footprint",
                    command=lambda: self._launch("defensive", "defensive.privacy")
                    ).pack(side="left", padx=4)
+        tk.Label(f, text="Asset can be a single host, a CIDR, or a comma-separated list "
+                         "(e.g. 192.168.1.0/24) — a whole VLAN you own.",
+                 bg=BG, fg=MUTED, font=(_UIFONT, 8)).pack(anchor="w", padx=16)
 
         tk.Label(f, text="Defence mode runs the full checks against YOUR assets, then "
                          "grades your exposure. Register the asset as owned first.",
@@ -466,10 +1037,30 @@ class AyaReconApp:
 
         self.def_grade = tk.StringVar(value="Grade: —")
         tk.Label(f, textvariable=self.def_grade, bg=BG, fg=FG,
-                 font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=16, pady=8)
+                 font=(_UIFONT, 14, "bold")).pack(anchor="w", padx=16, pady=8)
 
         self.def_tree = self._make_tree(f, ("severity", "category", "title", "detail"))
         self.def_tree.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+
+    def _run_defence_audit(self):
+        spec = self.def_target.get().strip()
+        if not spec:
+            messagebox.showwarning("Asset required", "Enter an asset (host/CIDR) first.")
+            return
+        if "/" in spec or "," in spec:
+            if not messagebox.askyesno(
+                    "Audit a whole range?",
+                    f"Self-audit every live host in {spec}? Only run this against networks "
+                    "and assets you own or are authorised to test."):
+                return
+
+            def per_host(h, stream):
+                self.scanner.run(self.workspace_id, h, "defensive",
+                                 "defensive.self_audit", confirmed=True,
+                                 confirmation_text="range self-audit", on_finding=stream)
+            self._expand_and_run(spec, per_host, self.def_tree, "defensive")
+        else:
+            self._launch("defensive", "defensive.self_audit")
 
     # ===================================================================== nmap
     def _launch_nmap(self):
@@ -488,12 +1079,14 @@ class AyaReconApp:
                 f"Run nmap '{preset}' against {target}?\n\nnmap makes direct contact "
                 "and may be logged. Do you have authorisation?"):
             return
+        self._tree_clear(self.recon_tree)
         self.status.set(f"Running nmap ({preset}) against {target} … this can take a while.")
 
         def work():
             dec, findings = self.scanner.run(
                 self.workspace_id, target, "active", "nmap.scan",
-                confirmed=True, confirmation_text="nmap scan", preset=preset)
+                confirmed=True, confirmation_text="nmap scan", preset=preset,
+                on_finding=self._stream(self.recon_tree))
             self.event_q.put(("scan_done", ("active", self.recon_tree, dec, findings)))
         self._run_bg(work)
 
@@ -515,6 +1108,8 @@ class AyaReconApp:
         self.status.set(f"Querying NVD for {len(products)} product(s)… (rate-limited)")
         key = self.config.get("nvd_api_key", "")
 
+        stream = self._stream(self.recon_tree)
+
         def work():
             new = nvd.enrich_findings(
                 findings, api_key=key,
@@ -526,6 +1121,7 @@ class AyaReconApp:
                     f["detail"], f.get("data", {}), f["severity"],
                     ai_reasoning=f.get("ai_reasoning", ""),
                     remediation=f.get("remediation", ""))
+                stream(f)   # live-append each CVE as it's found
             self.event_q.put(("scan_done", ("passive", self.recon_tree,
                                             Decision(True, "NVD live CVE check"), new)))
         self._run_bg(work)
@@ -538,7 +1134,7 @@ class AyaReconApp:
         ttk.Label(head, text="Packet Capture & Analysis", style="Head.TLabel").pack(side="left")
         self.cap_count = tk.StringVar(value="0 packets")
         tk.Label(head, textvariable=self.cap_count, bg=BG, fg=ACCENT,
-                 font=("Segoe UI", 10, "bold")).pack(side="right")
+                 font=(_UIFONT, 10, "bold")).pack(side="right")
         self.cap_status = tk.StringVar(value=capture_mod.backend_help())
         tk.Label(f, textvariable=self.cap_status, bg=BG, fg=MUTED,
                  wraplength=1000, justify="left").pack(anchor="w", padx=16)
@@ -600,7 +1196,7 @@ class AyaReconApp:
 
         self.cap_detail = scrolledtext.ScrolledText(paned, height=12, bg="#0a0c11",
                                                     fg="#cfe0cf", relief="flat",
-                                                    font=("Consolas", 9), wrap="word")
+                                                    font=(_MONO, 9), wrap="word")
         self.cap_detail.insert("end", "Click a packet above to dissect it layer by layer "
                                "(like Wireshark's detail pane).\n")
         self.cap_detail.configure(state="disabled")
@@ -806,7 +1402,7 @@ class AyaReconApp:
         # Read-only output pane (stable: we render shell output, we never try to
         # echo individual keystrokes — that was the source of the earlier glitches).
         self.term_text = tk.Text(f, bg="#0a0c11", fg="#dcdfe4", relief="flat",
-                                 font=("Consolas", 10), wrap="char", state="disabled")
+                                 font=(_MONO, 10), wrap="char", state="disabled")
         self.term_text.pack(fill="both", expand=True, padx=16, pady=(4, 4))
         for tag, color in ANSI_COLORS.items():
             self.term_text.tag_configure(tag, foreground=color)
@@ -919,7 +1515,7 @@ class AyaReconApp:
         ttk.Button(btns, text="🐍 Install Python libraries (pip)",
                    command=self._pip_install).pack(side="left", padx=6)
         tk.Label(btns, text="(⚡ = auto-installable here)", bg=BG, fg=MUTED,
-                 font=("Segoe UI", 8)).pack(side="left", padx=8)
+                 font=(_UIFONT, 8)).pack(side="left", padx=8)
 
         cols = ("status", "name", "category", "version", "install")
         self.tools_tree = ttk.Treeview(f, columns=cols, show="headings", height=10)
@@ -933,7 +1529,7 @@ class AyaReconApp:
         self.tools_tree.bind("<Double-1>", self._tool_copy_hint)
 
         self.tools_log = scrolledtext.ScrolledText(f, height=8, bg="#0a0c11", fg="#cfe0cf",
-                                                   relief="flat", font=("Consolas", 9))
+                                                   relief="flat", font=(_MONO, 9))
         self.tools_log.pack(fill="x", expand=False, padx=16, pady=(4, 12))
         self.tools_log.insert("end", "Install output appears here. "
                               "Double-click a tool to copy its command.\n")
@@ -1083,19 +1679,19 @@ class AyaReconApp:
         self.ai_log.pack(fill="both", expand=True, padx=16, pady=8)
         # Speech-bubble tags: user (lavender, right), AyaRecon (teal-green, left).
         self.ai_log.tag_configure("you_name", foreground=ACCENT2,
-                                  font=("Segoe UI", 9, "bold"),
+                                  font=(_UIFONT, 9, "bold"),
                                   lmargin1=140, lmargin2=140, spacing1=8)
         self.ai_log.tag_configure("you_msg", background="#39236b", foreground="#f3ecff",
                                   lmargin1=140, lmargin2=140, rmargin=6,
                                   spacing1=2, spacing3=8, borderwidth=6, relief="flat")
         self.ai_log.tag_configure("bot_name", foreground="#7fe3c0",
-                                  font=("Segoe UI", 9, "bold"),
+                                  font=(_UIFONT, 9, "bold"),
                                   lmargin1=6, lmargin2=6, spacing1=8)
         self.ai_log.tag_configure("bot_msg", background="#241a38", foreground=FG,
                                   lmargin1=6, lmargin2=6, rmargin=140,
                                   spacing1=2, spacing3=8, borderwidth=6, relief="flat")
         self.ai_log.tag_configure("sys_msg", foreground=MUTED,
-                                  font=("Segoe UI", 9, "italic"),
+                                  font=(_UIFONT, 9, "italic"),
                                   lmargin1=6, lmargin2=6, spacing1=4)
         self.ai_log.configure(state="disabled")
         self._ai_bubble("sys", "AyaRecon AI ready. The offline analyst works now; connect "
@@ -1405,6 +2001,8 @@ class AyaReconApp:
 
         tree = {"passive": self.recon_tree, "active": self.recon_tree,
                 "enumeration": self.recon_tree, "defensive": self.def_tree}[mode]
+        self._begin_scan()
+        self._tree_clear(tree)   # fresh view; results stream in live
         self.status.set(f"Running {module} against {target} …")
         self.recon_prog.configure(value=0, maximum=100)
 
@@ -1414,7 +2012,8 @@ class AyaReconApp:
         def work():
             decision, findings = self.scanner.run(
                 self.workspace_id, target, mode, module,
-                confirmed=confirmed, confirmation_text=conf_text, progress=progress)
+                confirmed=confirmed, confirmation_text=conf_text, progress=progress,
+                on_finding=self._stream(tree))
             self.event_q.put(("scan_done", (mode, tree, decision, findings)))
 
         self._run_bg(work)
@@ -1449,6 +2048,13 @@ class AyaReconApp:
                 elif kind == "phase":
                     self.phase_var.set("▶ " + payload)
                     self.status.set(payload)
+                elif kind == "stream":
+                    tree, finding = payload
+                    self._append_finding_row(tree, finding)
+                elif kind == "netlog":
+                    self._net_log(payload)
+                elif kind == "net_type":
+                    self._net_update_type(*payload)
                 elif kind == "packet":
                     self._cap_add_packet(payload)
                 elif kind == "cap_detail":
@@ -1476,6 +2082,16 @@ class AyaReconApp:
                     self._ai_bubble("bot", payload)
                 elif kind == "busy":
                     self._busy_delta(payload)
+                elif kind == "net_result":
+                    self._net_fill(payload)
+                elif kind == "netdev":
+                    self._net_add_device(payload)
+                elif kind == "net_portscan":
+                    self._net_scan_write(payload, clear=True, tag="port")
+                elif kind == "net_portscan_append":
+                    self._net_scan_write(payload, clear=False, tag="ai")
+                elif kind == "refresh_dash":
+                    self.refresh_dashboard()
                 elif kind == "ai_status":
                     self.ai_status.set(payload)
                 elif kind == "tools_rows":
@@ -1491,8 +2107,12 @@ class AyaReconApp:
                         self.status.set("Blocked: " + decision.reason)
                         messagebox.showwarning("Not permitted", decision.reason)
                     else:
-                        self._fill_tree(tree, findings)
-                        self.status.set(f"Done — {len(findings)} findings.")
+                        # Findings already streamed in live; if a path didn't
+                        # stream (empty tree but has findings), fill once.
+                        if findings and not self._tree_findings.get(str(tree)):
+                            self._fill_tree(tree, findings)
+                        shown = len(self._tree_findings.get(str(tree), {})) or len(findings)
+                        self.status.set(f"Done — {shown} finding(s).")
                         self.recon_prog.configure(value=0)
                         self.refresh_dashboard()
                         if mode == "defensive":
@@ -1502,7 +2122,8 @@ class AyaReconApp:
                     self._update_gate_label()
         except queue.Empty:
             pass
-        self.root.after(150, self._drain_queue)
+        self._tick_busy()
+        self.root.after(120, self._drain_queue)
 
     # ===================================================================== tree helpers
     def _make_tree(self, parent, cols):
@@ -1513,6 +2134,8 @@ class AyaReconApp:
             tree.column(c, width=widths.get(c, 160), anchor="w")
         for sev, col in SEV_COLORS.items():
             tree.tag_configure(sev, foreground=col)
+        tree.tag_configure("row_a", background=PANEL)
+        tree.tag_configure("row_b", background="#211a33")
         # Click a finding to open its detail + attack/remediation briefing.
         tree.bind("<Double-1>", self._on_finding_click)
         tree.bind("<Return>", self._on_finding_click)
@@ -1525,12 +2148,39 @@ class AyaReconApp:
         if not hasattr(self, "_tree_findings"):
             self._tree_findings = {}
         self._tree_findings[str(tree)] = {}
-        for f in findings:
+        for i, f in enumerate(findings):
             sev = f.get("severity", "info")
-            iid = tree.insert("", "end", tags=(sev,), values=(
+            stripe = "row_b" if i % 2 else "row_a"
+            iid = tree.insert("", "end", tags=(sev, stripe), values=(
                 sev.upper(), f.get("category", ""), f.get("title", ""),
                 (f.get("detail", "") or "")[:300]))
             self._tree_findings[str(tree)][iid] = f
+
+    def _tree_clear(self, tree):
+        tree.delete(*tree.get_children())
+        if not hasattr(self, "_tree_findings"):
+            self._tree_findings = {}
+        self._tree_findings[str(tree)] = {}
+
+    def _append_finding_row(self, tree, f):
+        """Append a single finding to a results tree (used for live streaming)."""
+        if not hasattr(self, "_tree_findings"):
+            self._tree_findings = {}
+        self._tree_findings.setdefault(str(tree), {})
+        sev = f.get("severity", "info")
+        stripe = "row_b" if len(tree.get_children()) % 2 else "row_a"
+        iid = tree.insert("", "end", tags=(sev, stripe), values=(
+            sev.upper(), f.get("category", ""), f.get("title", ""),
+            (f.get("detail", "") or "")[:300]))
+        self._tree_findings[str(tree)][iid] = f
+        try:
+            tree.see(iid)
+        except Exception:
+            pass
+
+    def _stream(self, tree):
+        """Return an on_finding callback that live-appends to `tree`."""
+        return lambda f: self.event_q.put(("stream", (tree, f)))
 
     def _on_finding_click(self, event):
         tree = event.widget
@@ -1550,15 +2200,15 @@ class AyaReconApp:
         head = tk.Frame(win, bg=PANEL)
         head.pack(fill="x")
         tk.Label(head, text=finding.get("title", ""), bg=PANEL, fg=FG,
-                 font=("Segoe UI", 14, "bold"), wraplength=680, justify="left",
+                 font=(_UIFONT, 14, "bold"), wraplength=680, justify="left",
                  anchor="w").pack(fill="x", padx=16, pady=(12, 2))
         tk.Label(head, text=f"{sev.upper()}  ·  {finding.get('category','')}  ·  "
                             f"{finding.get('target','')}", bg=PANEL,
-                 fg=SEV_COLORS.get(sev, MUTED), font=("Segoe UI", 10, "bold"),
+                 fg=SEV_COLORS.get(sev, MUTED), font=(_UIFONT, 10, "bold"),
                  anchor="w").pack(fill="x", padx=16, pady=(0, 12))
 
         body = scrolledtext.ScrolledText(win, bg="#0c0e14", fg=FG, wrap="word",
-                                         relief="flat", font=("Segoe UI", 10),
+                                         relief="flat", font=(_UIFONT, 10),
                                          insertbackground=FG)
         body.pack(fill="both", expand=True, padx=14, pady=10)
 
@@ -1566,7 +2216,7 @@ class AyaReconApp:
             body.insert("end", title + "\n", ("h",))
             body.insert("end", (text or "—") + "\n\n")
 
-        body.tag_configure("h", foreground=ACCENT, font=("Segoe UI", 11, "bold"))
+        body.tag_configure("h", foreground=ACCENT, font=(_UIFONT, 11, "bold"))
 
         section("Detail", finding.get("detail", ""))
         data = finding.get("data", {}) or {}

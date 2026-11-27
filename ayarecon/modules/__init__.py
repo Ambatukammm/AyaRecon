@@ -19,5 +19,5 @@ This keeps modules pure and easy to unit-test or extend.
 
 from . import (  # noqa: F401
     passive, active, recon_enum, defensive, enumeration, vuln_assessment,
-    exploitation,
+    exploitation, network_discovery,
 )
