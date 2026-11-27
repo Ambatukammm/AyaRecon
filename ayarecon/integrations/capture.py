@@ -379,6 +379,34 @@ def scan_credentials(pcap_path: str) -> list[dict]:
     return results
 
 
+def sniff_vlan_ids(seconds: int = 6, interface_label: str = "") -> list[str]:
+    """
+    Passively listen for a few seconds and return any 802.1Q VLAN IDs seen on the
+    wire. Needs tshark + capture privileges; returns [] if unavailable. Sends no
+    traffic — pure observation.
+    """
+    ts = _tshark()
+    if not ts:
+        return []
+    idx = interface_label.split(":", 1)[0].strip() if interface_label else ""
+    if not idx:
+        ifs = list_interfaces()
+        idx = ifs[0].split(":", 1)[0].strip() if ifs else "1"
+    cmd = [ts, "-i", idx, "-a", f"duration:{seconds}", "-n",
+           "-Y", "vlan", "-T", "fields", "-e", "vlan.id"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True,
+                             timeout=seconds + 15, errors="replace")
+    except Exception:
+        return []
+    ids = set()
+    for line in out.stdout.splitlines():
+        for token in line.replace(",", " ").split():
+            if token.strip().isdigit():
+                ids.add(token.strip())
+    return sorted(ids, key=lambda x: int(x))
+
+
 def launch_wireshark(interface: str = "", bpf_filter: str = "") -> tuple[bool, str]:
     exe = shutil.which("wireshark")
     if not exe:

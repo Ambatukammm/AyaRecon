@@ -52,6 +52,122 @@ _UIFONT = "Segoe UI"
 _MONO = "Consolas"
 
 
+def draw_ayaforge_mark(c, cx, cy, size, stroke_col, dot_col, angle=0.0):
+    """Draw the AyaForge mark on a Tk canvas `c`, centred at (cx,cy), fitting a
+    `size`-px box, optionally rotated by `angle` radians around its centre.
+
+    The mark (100-unit square): furnace peak (18,70)->(50,14)->(82,70), hearth
+    line (14,90)->(86,90), and Aya's spark at (50,56) r8. Stroke 12, round caps.
+    Shared by the header and the spinning startup splash so they stay identical.
+    """
+    import math
+    s = size / 100.0
+    cos, sin = math.cos(angle), math.sin(angle)
+
+    def P(px, py):                       # rotate around the mark's visual centre
+        dx, dy = px - 50, py - 52
+        return (cx + (dx * cos - dy * sin) * s, cy + (dx * sin + dy * cos) * s)
+
+    sw = max(2, 12 * s)
+    (ax, ay), (bx, by), (dx, dy) = P(18, 70), P(50, 14), P(82, 70)
+    c.create_line(ax, ay, bx, by, dx, dy, fill=stroke_col, width=sw,
+                  capstyle="round", joinstyle="round")           # furnace peak
+    (hx1, hy1), (hx2, hy2) = P(14, 90), P(86, 90)
+    c.create_line(hx1, hy1, hx2, hy2, fill=stroke_col, width=sw,
+                  capstyle="round")                              # hearth line
+    (sx, sy) = P(50, 56)
+    r = max(2, 8 * s)
+    c.create_oval(sx - r, sy - r, sx + r, sy + r, fill=dot_col, outline="")  # spark
+
+
+HELP = {
+    "dashboard": ("Dashboard",
+        "WHAT IT IS\nYour at-a-glance security picture for the current workspace.\n\n"
+        "WHAT YOU SEE\n• Severity tiles (Critical→Info) counting all findings.\n"
+        "• A live security grade (A–F).\n• The most recent findings.\n\n"
+        "HOW TO USE\nRun scans on the other tabs; results land here automatically. "
+        "Double-click any finding to see how it can be exploited and how to fix it. "
+        "Use ‘Clear findings’ to start a fresh assessment."),
+    "network": ("Network Discovery",
+        "WHAT IT IS\nA live map of every device on your network(s).\n\n"
+        "HOW TO USE\n1. ‘Discover (passive)’ reads your ARP cache — instant, sends "
+        "nothing, shows your own VLAN.\n2. ‘Scan all subnets’ auto-detects other "
+        "VLANs/subnets and sweeps them (routing table + gateway probing).\n3. ‘Deep "
+        "fingerprint’ runs OS+service detection to sharpen the Device-type column.\n"
+        "4. Filter the table or use the quick chips (Routers/Printers/…).\n"
+        "5. Double-click a device to inspect it and port-scan it.\n\n"
+        "NOTES\nMAC/vendor only appear for devices on your own segment; remote-subnet "
+        "hosts show IPv4+IPv6+hostname. Run as Administrator for full data."),
+    "workflow": ("Workflow (5-phase pentest)",
+        "WHAT IT IS\nA structured engagement against a target: Passive recon → Port "
+        "scan → Service enumeration → Vulnerability assessment → AI reporting.\n\n"
+        "HOW TO USE\n• Enter a domain, IP, CIDR (192.168.1.0/24) or comma-list, then "
+        "‘Run full workflow’. Ranges are expanded to live hosts and each is scanned.\n"
+        "• No target? Press ‘Scan my whole network’ — it auto-detects every subnet/"
+        "VLAN you’re on (and any network reachable over an active VPN), confirms your "
+        "VLAN/VPN posture, finds live hosts and runs the full workflow on each.\n"
+        "• ‘VLAN/VPN test’ reports whether you’re on a VPN / VLAN-segmented network.\n"
+        "• ‘Live CVE check (NVD)’ pulls the newest CVEs for discovered versions.\n\n"
+        "PRIVATE vs PUBLIC TARGETS\n• Private (192.168.x, 10.x, 172.16–31.x): you see "
+        "each device directly — but only if you’re ON that network, here or via VPN.\n"
+        "• Public (internet) IPs/domains: yes, you can scan these — it tests the "
+        "internet-facing surface (forwarded ports + the gateway’s own services). "
+        "Devices behind NAT are invisible from outside; that’s how NAT works, not a "
+        "tool limit.\n\nTESTING YOUR HOME NETWORK FROM WORK\n• Scanning your home’s "
+        "PUBLIC IP from work = external perimeter test: what the world can see.\n• To "
+        "reach the actual devices on your home LAN remotely, connect a VPN into home "
+        "first, then ‘Scan my whole network’ (or enter the home private range) — the "
+        "VPN puts you on that network so the internal hosts become visible.\n\n"
+        "Only scan addresses you own or are authorised to test. Results stream live; "
+        "double-click any finding for attack path + fix. Press ■ Stop to cancel."),
+    "defence": ("Defence (self-audit)",
+        "WHAT IT IS\nRuns the full checks against YOUR OWN assets and grades your "
+        "exposure (A–F).\n\nHOW TO USE\n1. Enter your asset — a host, a CIDR, or a "
+        "comma-list (a whole VLAN you own).\n2. ‘Mark as owned’ to register it.\n"
+        "3. ‘Run self-audit’ scans it; ‘Privacy footprint’ shows what’s publicly "
+        "visible.\n\nOnly run this against systems you own or are authorised to test."),
+    "capture": ("Packet Capture",
+        "WHAT IT IS\nA built-in, Wireshark-style live capture + analysis.\n\n"
+        "HOW TO USE\n1. Click ↻ to list interfaces, pick one, press ▶ Start.\n"
+        "2. Packets stream in, colour-coded by protocol.\n3. Click a packet for a full "
+        "layer-by-layer dissection.\n4. Type a Wireshark display filter (e.g. http, "
+        "tcp.port==21) and Apply, or use the quick chips.\n5. ‘Scan for cleartext "
+        "logins’ extracts credentials sent unencrypted.\n\nNeeds tshark + Npcap + "
+        "Administrator. ‘Open in Wireshark’ hands off for deep analysis."),
+    "terminal": ("Terminal",
+        "WHAT IT IS\nA command console so you can run any CLI tool without leaving "
+        "AyaRecon.\n\nHOW TO USE\n• Click a Quick action (ping, ipconfig, nmap quick…) "
+        "or type a command and press Run.\n• ↑/↓ recall history; Stop (Ctrl-C) kills a "
+        "running command; Clear wipes the output.\n\nIt’s a command runner, not a full "
+        "TTY — fullscreen apps (vim) aren’t supported, but every normal command works."),
+    "tools": ("Tools & Dependencies",
+        "WHAT IT IS\nDetects the external tools AyaRecon can drive and installs the "
+        "missing ones for you.\n\nHOW TO USE\n• ‘Install all missing’ uses winget/"
+        "Chocolatey/apt (it will set up Chocolatey if needed).\n• ‘Install selected’ / "
+        "double-click copies a tool’s install command.\n• ‘Install Python libraries’ "
+        "runs pip for the optional integrations.\n\nRun as Administrator so system "
+        "tools (nmap, Wireshark) can install."),
+    "ai": ("AI Assistant",
+        "WHAT IT IS\nAn analyst that explains your findings — attack paths and fixes — "
+        "in plain English.\n\nHOW TO USE\n• Ask things like ‘show me all critical "
+        "findings’ or ‘how can this be hacked?’.\n• ‘Correlate risks’ connects findings "
+        "into bigger-picture risks.\n• For full chat, connect a local model: Install "
+        "Ollama → Pull model → Test AI connection.\n\nThe offline analyst works without "
+        "any model; Ollama adds free-form conversation. Your data stays local."),
+    "reports": ("Reports",
+        "WHAT IT IS\nTurns your findings into shareable documents.\n\nHOW TO USE\n"
+        "• View the Executive summary (plain-English), Technical report, or Remediation "
+        "roadmap.\n• Export to HTML, PDF, CSV or JSON.\n\nThe HTML report embeds each "
+        "finding’s attack path, impact and fix."),
+    "settings": ("Settings",
+        "WHAT IT IS\nConfiguration for AyaRecon.\n\nWHAT YOU CAN SET\n• AI provider + "
+        "Ollama/cloud model and keys.\n• API keys: HaveIBeenPwned, GitHub, NVD (raises "
+        "live-CVE limits).\n• Scan timeouts, thread count and rate limit.\n• Custom "
+        "wordlist path, and your owned-assets allowlist for Defence.\n\nKeys are stored "
+        "locally only."),
+}
+
+
 def _pick_fonts():
     """Choose the nicest available UI + monospace fonts installed on this system."""
     global _UIFONT, _MONO
@@ -185,19 +301,8 @@ class AyaReconApp:
                         font=(_UIFONT, 9, "bold"))
 
     def _build_layout(self):
-        top = tk.Frame(self.root, bg=PANEL, height=60)
-        top.pack(fill="x")
-        top.pack_propagate(False)
-        tk.Label(top, text="🛡  AyaRecon", bg=PANEL, fg="#ffffff",
-                 font=(_UIFONT, 18, "bold")).pack(side="left", padx=(20, 10))
-        tk.Label(top, text="all-in-one recon cockpit", bg=PANEL, fg=MUTED,
-                 font=(_UIFONT, 10)).pack(side="left", pady=(6, 0))
         self.ws_var = tk.StringVar(value=f"● {self.workspace_name}")
-        tk.Label(top, textvariable=self.ws_var, bg=PANEL, fg=ACCENT,
-                 font=(_UIFONT, 10, "bold")).pack(side="right", padx=20)
-        tk.Label(top, text=f"v{__version__} · by {__author__}", bg=PANEL, fg=MUTED,
-                 font=(_UIFONT, 9)).pack(side="right", padx=4)
-        tk.Frame(self.root, bg=BORDER, height=1).pack(fill="x")
+        self._build_header()
 
         self.nb = ttk.Notebook(self.root)
         self.nb.pack(fill="both", expand=True, padx=12, pady=10)
@@ -236,6 +341,11 @@ class AyaReconApp:
         self._build_ai()
         self._build_reports()
         self._build_settings()
+
+        # Tab index → help key, so the header’s ‘?’ opens the active tab’s help
+        # (one overlap-free button instead of icons floating over each toolbar).
+        self._tab_help = ["dashboard", "network", "workflow", "defence", "capture",
+                          "terminal", "tools", "ai", "reports", "settings"]
 
         tk.Frame(self.root, bg=BORDER, height=1).pack(fill="x", side="bottom")
         bar = tk.Frame(self.root, bg=PANEL, height=30)
@@ -829,14 +939,20 @@ class AyaReconApp:
         self.recon_target.insert(0, "example.com")
         ttk.Button(bar, text="▶ Run full workflow",
                    command=self._run_workflow).pack(side="left", padx=6)
+        ttk.Button(bar, text="🌐 Scan my whole network",
+                   command=self._run_auto_network).pack(side="left", padx=4)
         ttk.Button(bar, text="🧪 VLAN/VPN test", style="Ghost.TButton",
-                   command=lambda: self._launch("passive", "network.vlanvpn")).pack(side="left", padx=4)
+                   command=self._run_vlanvpn).pack(side="left", padx=4)
         self.phase_var = tk.StringVar(value="")
         tk.Label(bar, textvariable=self.phase_var, bg=BG, fg=ACCENT,
                  font=(_UIFONT, 9, "bold")).pack(side="left", padx=8)
         tk.Label(f, text="Target can be a domain, an IP, a CIDR (e.g. 192.168.1.0/24) or a "
                          "comma-separated list — ranges are expanded to live hosts and each "
-                         "is scanned.", bg=BG, fg=MUTED, font=(_UIFONT, 8),
+                         "is scanned. Leave it blank and press “Scan my whole network” to "
+                         "auto-detect every subnet/VLAN you're on (and any reachable over "
+                         "VPN). Public IPs/domains work too — that scans the internet-facing "
+                         "surface only (see the “?” help).",
+                 bg=BG, fg=MUTED, font=(_UIFONT, 8),
                  wraplength=1000, justify="left").pack(anchor="w", padx=16)
 
         # Scrollable column of phase panels.
@@ -957,12 +1073,21 @@ class AyaReconApp:
     def _run_workflow(self):
         target = self.recon_target.get().strip()
         if not target:
-            messagebox.showwarning("Target required", "Enter a target first.")
+            if messagebox.askyesno(
+                    "No target — scan your network?",
+                    "No target entered. Scan every network you're on instead "
+                    "(auto-detect subnets/VLANs, plus anything reachable over VPN)?"):
+                self._run_auto_network()
             return
+        cls = network_discovery.classify_target(target)
+        extra = ("\n\n⚠ " + cls["note"]) if cls.get("note") else ""
+        if cls.get("scope") == "external":
+            extra += ("\n\nOnly scan public addresses you own or are explicitly "
+                      "authorised to test — unauthorised scanning may be illegal.")
         confirmed = messagebox.askyesno(
             "Confirm full workflow",
             f"The full workflow runs active scanning and service enumeration against "
-            f"{target} (phases 2–3 make direct contact and may be logged).\n\n"
+            f"{target} (phases 2–3 make direct contact and may be logged).{extra}\n\n"
             "Do you have authorisation to test this target?")
         if not confirmed:
             return
@@ -974,6 +1099,65 @@ class AyaReconApp:
                 on_finding=stream, cancel_check=self._cancel.is_set)
 
         self._expand_and_run(target, per_host, self.recon_tree, "workflow")
+
+    def _run_auto_network(self):
+        """No target needed — detect every subnet/VLAN you're on (plus VPN-reachable
+        networks), confirm VLAN/VPN posture, then run the full workflow over each."""
+        self._begin_scan()
+        self._tree_clear(self.recon_tree)
+        self.phase_var.set("detecting your networks…")
+        stream = self._stream(self.recon_tree)
+
+        def work():
+            info = network_discovery.auto_scan_ranges(
+                nmap_sweep=nmap_tool.discover_hosts,
+                progress=lambda m: self.event_q.put(("phase", m)))
+            ranges = info["ranges"]
+            # VLAN/VPN posture first, as a context finding.
+            stream({"severity": "info", "category": "network",
+                    "title": "VPN active" if info["vpn_active"] else "No VPN active",
+                    "detail": (", ".join(n for n in info["vpn_names"] if n)
+                               or "no VPN adapters")
+                              + (" — VPN-reachable networks are included below"
+                                 if info["vpn_active"] else "")})
+            for fnd in network_discovery.vlan_vpn_report():
+                stream(fnd)
+            if not ranges:
+                stream({"severity": "medium", "category": "network",
+                        "title": "No local subnet detected",
+                        "detail": "Couldn't determine a network to scan — check your "
+                                  "connection, or enter a target manually."})
+                self.event_q.put(("scan_done", ("workflow", self.recon_tree,
+                                  Decision(False, "no networks found"), [])))
+                return
+            stream({"severity": "info", "category": "network",
+                    "title": f"Scanning {len(ranges)} network(s)",
+                    "detail": ", ".join(ranges)})
+            # Discover live hosts across all ranges, then full-workflow each.
+            self.event_q.put(("phase", "discovering live hosts…"))
+            hosts = []
+            for h in nmap_tool.discover_hosts(ranges):
+                if h.get("ip"):
+                    hosts.append(h["ip"])
+                if self._cancel.is_set():
+                    break
+            seen = set()
+            hosts = [h for h in hosts if not (h in seen or seen.add(h))]
+            self.event_q.put(("phase", f"{len(hosts)} live host(s) found"))
+            for h in hosts:
+                if self._cancel.is_set():
+                    break
+                stream({"severity": "info", "category": "host",
+                        "title": f"════ {h} ════", "detail": "workflow target"})
+                self.scanner.run_full_workflow(
+                    self.workspace_id, h, confirmed=True,
+                    phase_cb=lambda label, hh=h: self.event_q.put(
+                        ("phase", f"{hh}: {label}")),
+                    on_finding=stream, cancel_check=self._cancel.is_set)
+            self.event_q.put(("scan_done", ("workflow", self.recon_tree,
+                              Decision(True, f"auto-scan over {len(hosts)} host(s) "
+                                       f"in {len(ranges)} network(s)"), [])))
+        self._run_bg(work)
 
     def _expand_and_run(self, spec, per_host, tree, label):
         """
@@ -1041,6 +1225,30 @@ class AyaReconApp:
 
         self.def_tree = self._make_tree(f, ("severity", "category", "title", "detail"))
         self.def_tree.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+
+    def _run_vlanvpn(self):
+        """VLAN/VPN analysis, optionally confirming 802.1Q tags via a short sniff."""
+        self._begin_scan()
+        self._tree_clear(self.recon_tree)
+        sniff = False
+        if capture_mod.backend() == "tshark":
+            sniff = messagebox.askyesno(
+                "Sniff for VLAN tags?",
+                "Also listen passively for ~6 seconds to positively confirm 802.1Q VLAN "
+                "tags on the wire? (Needs admin; sends no traffic.)")
+        self.status.set("Analysing VLAN/VPN posture…")
+        stream = self._stream(self.recon_tree)
+
+        def work():
+            vlan_ids = []
+            if sniff:
+                self.event_q.put(("phase", "listening for 802.1Q tags (~6s)…"))
+                vlan_ids = capture_mod.sniff_vlan_ids(6)
+            dec, findings = self.scanner.run(
+                self.workspace_id, "network", "passive", "network.vlanvpn",
+                confirmed=True, on_finding=stream, vlan_ids=vlan_ids)
+            self.event_q.put(("scan_done", ("passive", self.recon_tree, dec, findings)))
+        self._run_bg(work)
 
     def _run_defence_audit(self):
         spec = self.def_target.get().strip()
@@ -2051,6 +2259,8 @@ class AyaReconApp:
                 elif kind == "stream":
                     tree, finding = payload
                     self._append_finding_row(tree, finding)
+                elif kind == "find_ai":
+                    self._find_write(payload + "\n", "ai")
                 elif kind == "netlog":
                     self._net_log(payload)
                 elif kind == "net_type":
@@ -2191,76 +2401,230 @@ class AyaReconApp:
         if finding:
             self._show_finding_detail(finding)
 
-    def _show_finding_detail(self, finding):
+    # ------------------------------------------------------------------ header
+    @staticmethod
+    def _lerp(c1, c2, t):
+        """Interpolate two #rrggbb colours → #rrggbb at fraction t (0..1)."""
+        a = tuple(int(c1[i:i + 2], 16) for i in (1, 3, 5))
+        b = tuple(int(c2[i:i + 2], 16) for i in (1, 3, 5))
+        return "#%02x%02x%02x" % tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+    def _build_header(self):
+        self._hdr = tk.Canvas(self.root, height=66, highlightthickness=0, bd=0, bg=PANEL)
+        self._hdr.pack(fill="x")
+        self._hdr.bind("<Configure>", lambda e: self._paint_header())
+        # Clickable ‘?’ help (context-aware) via canvas tag-bind — no overlay widget.
+        self._hdr.tag_bind("help", "<Button-1>", lambda e: self._current_help())
+        self._hdr.tag_bind("help", "<Enter>",
+                           lambda e: (self._hdr.itemconfig("helptxt", fill="#ffffff"),
+                                      self._hdr.config(cursor="hand2")))
+        self._hdr.tag_bind("help", "<Leave>",
+                           lambda e: (self._hdr.itemconfig("helptxt", fill=ACCENT2),
+                                      self._hdr.config(cursor="")))
+
+    def _paint_header(self):
+        c = self._hdr
+        try:
+            w = c.winfo_width() or 1000
+            h = 66
+            c.delete("all")
+            # Horizontal gradient: deep violet glow on the left → panel on the right.
+            left, right = "#2a1a44", PANEL
+            step = 3
+            for x in range(0, w, step):
+                c.create_line(x, 0, x, h, fill=self._lerp(left, right, min(x / max(w, 1), 1)))
+            # A soft accent halo behind the logo.
+            for i, col in enumerate(("#4a2f7a", "#3a2560")):
+                c.create_oval(-40 + i * 10, -30 + i * 8, 150 - i * 10, 96 - i * 8,
+                              outline="", fill=col)
+            c.create_rectangle(0, 0, 4, h, outline="", fill=ACCENT)  # accent edge
+            # Logo + wordmark (two-tone).
+            c.create_text(26, 30, anchor="w", text="🛡", font=(_UIFONT, 20))
+            c.create_text(58, 24, anchor="w", text="Aya", fill="#ffffff",
+                          font=(_UIFONT, 19, "bold"))
+            ax = 58 + self._text_w("Aya", 19, True)
+            c.create_text(ax, 24, anchor="w", text="Recon", fill=ACCENT2,
+                          font=(_UIFONT, 19, "bold"))
+            c.create_text(60, 47, anchor="w", text="all-in-one recon cockpit",
+                          fill=MUTED, font=(_UIFONT, 9))
+            # AyaLabs mark, centred — open 'A' in light, Aya's dot in project purple.
+            self._draw_logo(w / 2, h / 2 + 1, 46, "#ffffff", ACCENT2)
+            # Right cluster: workspace pill · version · help.
+            hx = w - 26
+            c.create_text(hx, h / 2, anchor="e", text="?", fill=ACCENT2,
+                          font=(_UIFONT, 17, "bold"), tags=("help", "helptxt"))
+            c.create_text(hx - 34, 22, anchor="e", text=self.ws_var.get(),
+                          fill=ACCENT, font=(_UIFONT, 10, "bold"))
+            c.create_text(hx - 34, 42, anchor="e",
+                          text=f"v{__version__} · by {__author__}",
+                          fill=MUTED, font=(_UIFONT, 8))
+            # Gradient underline.
+            for x in range(0, w, step):
+                t = x / max(w, 1)
+                col = self._lerp(ACCENT2, PANEL, min(t * 1.4, 1))
+                c.create_line(x, h - 2, x, h, fill=col)
+        except Exception:
+            pass
+
+    def _draw_logo(self, cx, cy, size, stroke_col, dot_col, angle=0.0):
+        """Draw the AyaForge mark on the header canvas — the furnace peak, the
+        hearth line and Aya's spark — optionally rotated by `angle` radians.
+        On a 100-unit square: peak (18,70)->(50,14)->(82,70); hearth (14,90)->
+        (86,90); spark (50,56) r8; stroke 12, round caps."""
+        draw_ayaforge_mark(self._hdr, cx, cy, size, stroke_col, dot_col, angle)
+
+    @staticmethod
+    def _text_w(text, size, bold=False):
+        """Best-effort pixel width of header text for two-tone wordmark spacing."""
+        try:
+            from tkinter import font as _tf
+            return _tf.Font(family=_UIFONT, size=size,
+                            weight="bold" if bold else "normal").measure(text)
+        except Exception:
+            return int(len(text) * size * 0.62)
+
+    def _current_help(self):
+        """Open help for whichever tab is selected (header ‘?’ handler)."""
+        try:
+            idx = self.nb.index(self.nb.select())
+            keys = getattr(self, "_tab_help", [])
+            self._show_help(keys[idx] if 0 <= idx < len(keys) else "dashboard")
+        except Exception:
+            self._show_help("dashboard")
+
+    def refresh_header(self):
+        if hasattr(self, "_hdr"):
+            self._paint_header()
+
+    def _show_help(self, key):
+        title, text = HELP.get(key, (key.title(), "No help available for this tab."))
         win = tk.Toplevel(self.root, bg=BG)
-        sev = finding.get("severity", "info")
-        win.title(f"Finding — {finding.get('title','')}")
-        win.geometry("720x620")
+        win.title(f"Help — {title}")
+        win.geometry("600x560")
+        win.configure(bg=BG)
+        tk.Frame(win, bg=ACCENT, height=4).pack(fill="x")      # accent strip
 
-        head = tk.Frame(win, bg=PANEL)
+        head = tk.Frame(win, bg=CARD)
         head.pack(fill="x")
-        tk.Label(head, text=finding.get("title", ""), bg=PANEL, fg=FG,
-                 font=(_UIFONT, 14, "bold"), wraplength=680, justify="left",
-                 anchor="w").pack(fill="x", padx=16, pady=(12, 2))
-        tk.Label(head, text=f"{sev.upper()}  ·  {finding.get('category','')}  ·  "
-                            f"{finding.get('target','')}", bg=PANEL,
-                 fg=SEV_COLORS.get(sev, MUTED), font=(_UIFONT, 10, "bold"),
-                 anchor="w").pack(fill="x", padx=16, pady=(0, 12))
+        tk.Label(head, text=f"  ?  {title}", bg=CARD, fg="#ffffff",
+                 font=(_UIFONT, 15, "bold"), anchor="w").pack(
+                     fill="x", padx=16, pady=(12, 2))
+        tk.Label(head, text="What this tab is for and how to use it",
+                 bg=CARD, fg=MUTED, font=(_UIFONT, 9), anchor="w").pack(
+                     fill="x", padx=16, pady=(0, 12))
 
-        body = scrolledtext.ScrolledText(win, bg="#0c0e14", fg=FG, wrap="word",
-                                         relief="flat", font=(_UIFONT, 10),
-                                         insertbackground=FG)
-        body.pack(fill="both", expand=True, padx=14, pady=10)
-
-        def section(title, text):
-            body.insert("end", title + "\n", ("h",))
-            body.insert("end", (text or "—") + "\n\n")
-
-        body.tag_configure("h", foreground=ACCENT, font=(_UIFONT, 11, "bold"))
-
-        section("Detail", finding.get("detail", ""))
-        data = finding.get("data", {}) or {}
-        if data:
-            kv = "\n".join(f"  {k}: {v}" for k, v in data.items()
-                           if k not in ("records",) and not isinstance(v, (list, dict)))
-            if kv:
-                section("Data", kv)
-
-        # Use the offline briefing directly so the window opens instantly (the
-        # LLM elaboration is behind the 'Ask AI about this' button).
-        b = exploitation.brief_for_finding(finding)
-        if b:
-            section("Attack path, impact & remediation", b.as_text())
-        else:
-            section("Remediation", finding.get("remediation")
-                    or "Review this item against vendor guidance.")
-
-        if finding.get("ai_reasoning"):
-            section("Analyst note", finding["ai_reasoning"])
-
-        body.configure(state="disabled")
+        out = scrolledtext.ScrolledText(win, bg="#120d1e", fg=FG, wrap="word",
+                                        relief="flat", font=(_UIFONT, 10),
+                                        padx=14, pady=12)
+        out.pack(fill="both", expand=True, padx=14, pady=(8, 8))
+        out.tag_configure("h", foreground=ACCENT2, font=(_UIFONT, 11, "bold"),
+                          spacing1=8, spacing3=3)
+        out.tag_configure("body", foreground=FG, spacing3=2)
+        out.tag_configure("bullet", foreground="#86e8b0", spacing3=2)
+        for line in text.split("\n"):
+            s = line.rstrip()
+            if s and s == s.upper() and not s.startswith(("•", "1", "2", "3", "4", "5")):
+                out.insert("end", s + "\n", ("h",))
+            elif s.startswith("•") or (len(s) > 1 and s[0].isdigit() and s[1] in ".)"):
+                out.insert("end", s + "\n", ("bullet",))
+            else:
+                out.insert("end", s + "\n", ("body",))
+        out.configure(state="disabled")
 
         btns = tk.Frame(win, bg=BG)
         btns.pack(fill="x", padx=14, pady=(0, 12))
-        ttk.Button(btns, text="🤖 Ask AI about this",
-                   command=lambda: self._ask_ai_about(finding, win)).pack(side="left")
-        ttk.Button(btns, text="Copy remediation",
+        ttk.Button(btns, text="Got it", command=win.destroy).pack(side="right")
+
+    def _show_finding_detail(self, finding):
+        sev = finding.get("severity", "info")
+        sevcol = SEV_COLORS.get(sev, MUTED)
+        win = tk.Toplevel(self.root, bg=BG)
+        win.title(f"Finding — {finding.get('title','')}")
+        win.geometry("720x620")
+        win.configure(bg=BG)
+        tk.Frame(win, bg=sevcol, height=4).pack(fill="x")   # severity-coloured strip
+
+        head = tk.Frame(win, bg=CARD)
+        head.pack(fill="x")
+        tk.Label(head, text=finding.get("title", ""), bg=CARD, fg="#ffffff",
+                 font=(_UIFONT, 15, "bold"), wraplength=680, justify="left",
+                 anchor="w").pack(fill="x", padx=16, pady=(12, 2))
+        grid = tk.Frame(head, bg=CARD)
+        grid.pack(fill="x", padx=16, pady=(0, 12))
+        chips = [("Severity", sev.upper(), sevcol),
+                 ("Category", finding.get("category", "—"), "#9fe8ff"),
+                 ("Target", finding.get("target", "—") or "—", "#ffd79b")]
+        for i, (k, v, col) in enumerate(chips):
+            cell = tk.Frame(grid, bg=CARD)
+            cell.grid(row=0, column=i, sticky="w", padx=(0, 22), pady=2)
+            tk.Label(cell, text=k + ": ", bg=CARD, fg=MUTED,
+                     font=(_UIFONT, 9)).pack(side="left")
+            tk.Label(cell, text=v, bg=CARD, fg=col,
+                     font=(_MONO, 9, "bold")).pack(side="left")
+
+        out = scrolledtext.ScrolledText(win, bg="#120d1e", fg=FG, wrap="word",
+                                        relief="flat", font=(_UIFONT, 10),
+                                        padx=12, pady=10)
+        out.pack(fill="both", expand=True, padx=14, pady=(8, 8))
+        out.tag_configure("h", foreground=ACCENT2, font=(_UIFONT, 11, "bold"),
+                          spacing1=6, spacing3=2)
+        out.tag_configure("brief", foreground="#86e8b0")      # analysis in green
+        out.tag_configure("ai", foreground="#d7a3ff")          # AI answers in purple
+        out.tag_configure("body", foreground=FG)
+        self._find_out = out
+
+        def section(title, text, tag="body"):
+            out.insert("end", title + "\n", ("h",))
+            out.insert("end", (text or "—") + "\n\n", (tag,))
+
+        section("Detail", finding.get("detail", ""))
+        data = finding.get("data", {}) or {}
+        kv = "\n".join(f"  {k}: {v}" for k, v in data.items()
+                       if k not in ("records",) and not isinstance(v, (list, dict)))
+        if kv:
+            section("Data", kv)
+        b = exploitation.brief_for_finding(finding)
+        if b:
+            section("Attack path, impact & remediation", b.as_text(), "brief")
+        else:
+            section("Remediation", finding.get("remediation")
+                    or "Review this item against vendor guidance.", "brief")
+        if finding.get("ai_reasoning"):
+            section("Analyst note", finding["ai_reasoning"])
+        out.configure(state="disabled")
+
+        btns = tk.Frame(win, bg=BG)
+        btns.pack(fill="x", padx=14, pady=(0, 12))
+        ttk.Button(btns, text="🤖 Ask AI (answers here)",
+                   command=lambda: self._ask_ai_about(finding)).pack(side="left")
+        ttk.Button(btns, text="Copy remediation", style="Ghost.TButton",
                    command=lambda: self._copy_text(finding.get("remediation", ""))
                    ).pack(side="left", padx=8)
         ttk.Button(btns, text="Close", command=win.destroy).pack(side="right")
 
-    def _ask_ai_about(self, finding, win=None):
-        if win:
-            win.destroy()
-        self.nb.select(self.tab_ai)
-        q = f"Explain the attack path and remediation for: {finding.get('title')} " \
-            f"({finding.get('detail','')})"
-        self._ai_bubble("you", q)
-        findings = [finding]
+    def _find_write(self, text, tag="ai"):
+        out = getattr(self, "_find_out", None)
+        if not out:
+            return
+        try:
+            out.configure(state="normal")
+            out.insert("end", text, (tag,))
+            out.see("end")
+            out.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _ask_ai_about(self, finding):
+        # Answer inline in this popup — no tab switch.
+        self._find_write("\n🤖 AI analysis\n", "h")
+        self._find_write("Thinking…\n", "ai")
 
         def work():
-            ans = self.ai.explain_finding(finding)
-            self.event_q.put(("ai", ans))
+            try:
+                ans = self.ai.explain_finding(finding)
+            except Exception as exc:
+                ans = f"[AI error] {exc}"
+            self.event_q.put(("find_ai", ans))
         self._run_bg(work)
 
     def _copy_text(self, text):
@@ -2287,8 +2651,18 @@ class AyaReconApp:
 
 def launch():
     root = tk.Tk()
+    root.withdraw()                      # stay hidden behind the splash
+
+    def build():
+        root.deiconify()
+        try:
+            AyaReconApp(root)
+        except SystemExit:
+            root.destroy()
+
     try:
-        AyaReconApp(root)
-    except SystemExit:
-        return
+        from .splash import run_splash
+        run_splash(root, build)          # animate, then build the app
+    except Exception:
+        build()                          # splash failed → launch straight into app
     root.mainloop()

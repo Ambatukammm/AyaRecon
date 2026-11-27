@@ -476,6 +476,93 @@ def routing_table_networks() -> list[str]:
     return nets
 
 
+def classify_target(target: str) -> dict:
+    """
+    Classify a workflow/scan target so the UI can set expectations.
+
+    Returns {kind, scope, note}:
+      kind  = 'private' | 'public' | 'loopback' | 'hostname' | 'range' | 'unknown'
+      scope = 'internal' (you see hosts directly) | 'external' (perimeter only)
+      note  = plain-English explanation of what a scan will and won't see.
+    """
+    t = (target or "").strip()
+    if not t:
+        return {"kind": "unknown", "scope": "external", "note": ""}
+    probe = t.split("/")[0]
+    try:
+        ip = ipaddress.ip_address(probe)
+    except ValueError:
+        # It's a hostname/domain — resolve to judge, but treat as external by default.
+        resolved = ""
+        try:
+            resolved = socket.gethostbyname(probe)
+            ipp = ipaddress.ip_address(resolved)
+            if ipp.is_private:
+                return {"kind": "hostname", "scope": "internal",
+                        "note": f"{probe} resolves to a private address "
+                                f"({resolved}) — it's on a local network."}
+        except Exception:
+            pass
+        return {"kind": "hostname", "scope": "external",
+                "note": f"{probe} is a public name" +
+                        (f" ({resolved})" if resolved else "") +
+                        " — you're scanning its internet-facing surface only."}
+    if ip.is_loopback:
+        return {"kind": "loopback", "scope": "internal",
+                "note": "Loopback — this machine itself."}
+    if ip.is_private:
+        return {"kind": "range" if "/" in t else "private", "scope": "internal",
+                "note": "Private address — on a local network. You'll see hosts "
+                        "directly only if you're on that network (here, or via VPN)."}
+    return {"kind": "range" if "/" in t else "public", "scope": "external",
+            "note": "PUBLIC (internet) address. A scan sees only what the firewall/"
+                    "router exposes to the outside — forwarded ports and services on "
+                    "the gateway itself. Devices behind NAT (192.168.x, 10.x) are NOT "
+                    "visible from outside. To reach them remotely, connect a VPN into "
+                    "that network first, then scan the private range."}
+
+
+def auto_scan_ranges(nmap_sweep=None, progress=None) -> dict:
+    """
+    Work out, with no target given, every network to scan for an 'audit the network
+    I'm on' run — INCLUDING anything reachable over an active VPN.
+
+    Returns {"ranges": [cidr,...], "vpn_active": bool, "vpn_names": [...],
+             "interfaces": [...]}.
+
+    Unlike auto_subnets (which skips VPN adapters for local-VLAN probing), this
+    folds in the VPN's own usable subnet and any routed networks, so testing your
+    home network from work works once the VPN is up. Ranges wider than /16 are
+    dropped so we never sweep the open internet (e.g. a Tailscale /10).
+    """
+    interfaces = local_interfaces()
+    ranges = set(auto_subnets(interfaces, nmap_sweep, progress))
+    ranges.update(routing_table_networks())
+    vpns = [a for a in interfaces if a.get("is_vpn")]
+    for a in vpns:
+        c = a.get("cidr")
+        if c:
+            try:
+                net = ipaddress.IPv4Network(c, strict=False)
+                if net.prefixlen < 31:          # skip /31,/32 point-to-point stubs
+                    ranges.add(str(net))
+            except Exception:
+                pass
+    # Safety: never auto-sweep anything bigger than a /16.
+    safe = []
+    for c in ranges:
+        try:
+            if ipaddress.IPv4Network(c, strict=False).prefixlen >= 16:
+                safe.append(c)
+        except Exception:
+            pass
+    safe = sorted(set(safe), key=lambda c: tuple(
+        int(x) for x in c.split("/")[0].split(".")))
+    return {"ranges": safe, "vpn_active": bool(vpns),
+            "vpn_names": [a.get("name", "") for a in vpns],
+            "interfaces": interfaces}
+
+
 def auto_subnets(interfaces: list[dict], nmap_sweep, progress=None) -> list[str]:
     """
     Work out which other subnets/VLANs exist — WITHOUT being told — by:
